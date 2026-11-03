@@ -18,6 +18,9 @@ const GROUP_HINT = {
   question: 'Questions still unanswered',
 };
 
+const LIST_PAGE = 15;
+const CONTRIBUTOR_PAGE = 8;
+
 export default function Departure() {
   const { projectId, summary, notify, refresh, go } = useApp();
   const { data, loading, error, reload } = useAsync(() => api(`/projects/${projectId}/transition`), [projectId]);
@@ -27,6 +30,8 @@ export default function Departure() {
   const [customText, setCustomText] = useState('');
   const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState(false);
+  const [listLimit, setListLimit] = useState(LIST_PAGE);
+  const [contributorLimit, setContributorLimit] = useState(CONTRIBUTOR_PAGE);
 
   const options = useMemo(() => {
     if (!data) return [];
@@ -65,6 +70,11 @@ export default function Departure() {
     setCustom((focus?.responsibilities ?? []).filter((item) => !item.claimId).map((item) => item.text));
   }, [data]);
 
+  useEffect(() => {
+    setListLimit(LIST_PAGE);
+    setContributorLimit(CONTRIBUTOR_PAGE);
+  }, [data, filter]);
+
   if (loading) return <Loading rows={5} />;
   if (error) {
     return (
@@ -87,6 +97,17 @@ export default function Departure() {
     category,
     items: visible.filter((claim) => claim.category === category),
   })).filter((group) => group.items.length);
+
+  // Only a slice renders at a time: the claim list can run into the hundreds.
+  let budget = listLimit;
+  const shownGroups = [];
+  for (const group of groups) {
+    if (budget <= 0) break;
+    const items = group.items.slice(0, budget);
+    budget -= items.length;
+    shownGroups.push({ ...group, items, total: group.items.length });
+  }
+  const shownCount = Math.min(listLimit, visible.length);
 
   const chosenClaims = candidates.filter((claim) => selected.includes(claim.id));
   const areas = [...new Set([...chosenClaims.map((claim) => claim.component).filter(Boolean)])];
@@ -155,7 +176,7 @@ export default function Departure() {
         </div>
         <div className="transfer-hero-side">
           <Badge tone={locked ? 'success' : 'warning'} dot>
-            {locked ? `Approved v${data.approvedVersion}` : 'Draft'}
+            {locked ? `Approved ` : 'Draft'}
           </Badge>
           <span className="transfer-hero-count">
             <strong>{totalSelected}</strong>
@@ -182,7 +203,7 @@ export default function Departure() {
           >
             {options.length ? (
               <div className="contributor-grid">
-                {options.map((option) => (
+                {options.slice(0, contributorLimit).map((option) => (
                   <button
                     type="button"
                     key={option.key}
@@ -205,6 +226,18 @@ export default function Departure() {
                     </span>
                   </button>
                 ))}
+                {options.length > contributorLimit && (
+                  <div className="contributor-more">
+                    <Btn
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setContributorLimit((value) => value + CONTRIBUTOR_PAGE)}
+                    >
+                      Show {Math.min(CONTRIBUTOR_PAGE, options.length - contributorLimit)} more
+                    </Btn>
+                    <span className="hint">{options.length - contributorLimit} not shown</span>
+                  </div>
+                )}
               </div>
             ) : (
               <Empty icon="alert" title="No contributors recorded yet">
@@ -245,12 +278,12 @@ export default function Departure() {
 
             {groups.length ? (
               <div className="responsibility-groups">
-                {groups.map((group) => (
+                {shownGroups.map((group) => (
                   <section className="responsibility-group" key={group.category}>
                     <header className="responsibility-head">
                       <CategoryBadge category={group.category} label={group.items[0].categoryLabel} />
                       <span className="responsibility-hint">{GROUP_HINT[group.category] ?? ''}</span>
-                      <span className="responsibility-count">{group.items.length}</span>
+                      <span className="responsibility-count">{group.total}</span>
                     </header>
                     <div className="responsibility-list">
                       {group.items.map((claim) => {
@@ -272,6 +305,16 @@ export default function Departure() {
                     </div>
                   </section>
                 ))}
+                {visible.length > shownCount && (
+                  <div className="responsibility-more">
+                    <Btn variant="ghost" size="sm" onClick={() => setListLimit((value) => value + LIST_PAGE)}>
+                      Show {Math.min(LIST_PAGE, visible.length - shownCount)} more
+                    </Btn>
+                    <span className="hint">
+                      Showing {shownCount} of {visible.length}
+                    </span>
+                  </div>
+                )}
               </div>
             ) : (
               <Empty icon="search" title="No responsibilities match">

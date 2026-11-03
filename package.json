@@ -1,0 +1,31 @@
+{
+  "name": "contextbridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ContextBridge — evidence-backed project knowledge continuity for departing team members",
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "node server.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "node server.js",
+    "seed": "node src/seed.js",
+    "seed:reset": "node src/seed.js --reset",
+    "test": "node --test test/pipeline.test.js test/llm.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "lucide-react": "^1.66.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "vite": "^8.3.5"
+  }
+}

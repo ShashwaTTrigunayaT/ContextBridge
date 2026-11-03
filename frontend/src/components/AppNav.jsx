@@ -20,19 +20,19 @@ import { Avatar, cx } from '../ui.jsx';
 import { LogoMark } from './Logo.jsx';
 import NewProjectModal from './NewProjectModal.jsx';
 
-// Every project view is reachable. The five most-used views stay as tabs; the
-// rest live in a "More" menu so the bar never needs horizontal scrolling.
+// Every project view is a top-level tab. The dashboard is not hidden inside a
+// menu, so it cannot be confused with the Workspaces hub.
 const ITEMS = [
   { view: 'workspaces', label: 'Workspaces', Icon: LayoutGrid },
   { view: 'overview', label: 'Dashboard', Icon: LayoutGrid },
   { view: 'departure', label: 'Departure', Icon: ArrowRightLeft, permission: 'project:manage' },
   { view: 'sources', label: 'Sources', Icon: Database, permission: 'source:connect' },
   { view: 'activity', label: 'Activity', Icon: Activity, permission: 'audit:read' },
-  { view: 'knowledge', label: 'Knowledge', Icon: Network, permission: 'claim:review', overflow: true },
-  { view: 'claims', label: 'Evidence', Icon: ListChecks, permission: 'claim:review', overflow: true },
-  { view: 'gaps', label: 'Risks', Icon: AlertTriangle, permission: 'claim:review', overflow: true },
-  { view: 'handover', label: 'Handover', Icon: FileText, overflow: true },
-  { view: 'workspace', label: 'Incoming', Icon: Laptop, overflow: true },
+  { view: 'knowledge', label: 'Knowledge', Icon: Network, permission: 'claim:review' },
+  { view: 'claims', label: 'Evidence', Icon: ListChecks, permission: 'claim:review' },
+  { view: 'gaps', label: 'Risks', Icon: AlertTriangle, permission: 'claim:review' },
+  { view: 'handover', label: 'Handover', Icon: FileText },
+  { view: 'workspace', label: 'Incoming', Icon: Laptop },
 ];
 
 export default function AppNav() {
@@ -41,7 +41,6 @@ export default function AppNav() {
   const inputRef = useRef(null);
   const attention = (summary?.counts?.severeGaps ?? 0) + (summary?.counts?.pendingClaims ?? 0);
   const allowed = (permission) => !permission || summary?.permissions?.includes(permission);
-  const links = ITEMS.filter((item) => allowed(item.permission));
 
   useEffect(() => {
     const onKey = (event) => {
@@ -67,21 +66,18 @@ export default function AppNav() {
           </button>
 
           <nav className="app-links" aria-label="Project">
-            {links
-              .filter((item) => !item.overflow)
-              .map((item) => (
-                <button
-                  key={item.view}
-                  type="button"
-                  className={cx('app-link', route === item.view && 'is-active')}
-                  onClick={() => go(item.view)}
-                  aria-current={route === item.view ? 'page' : undefined}
-                >
-                  <item.Icon size={13} strokeWidth={1.8} />
-                  {item.label}
-                </button>
-              ))}
-            <NavMore items={links.filter((item) => item.overflow)} route={route} go={go} />
+            {ITEMS.filter((item) => allowed(item.permission)).map((item) => (
+              <button
+                key={item.view}
+                type="button"
+                className={cx('app-link', route === item.view && 'is-active')}
+                onClick={() => go(item.view)}
+                aria-current={route === item.view ? 'page' : undefined}
+              >
+                <item.Icon size={13} strokeWidth={1.8} />
+                {item.label}
+              </button>
+            ))}
           </nav>
 
           <div className="spacer" />
@@ -144,65 +140,6 @@ export default function AppNav() {
       </header>
       <NewProjectModal open={newProject} onClose={() => setNewProject(false)} />
     </>
-  );
-}
-
-function NavMore({ items, route, go }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDown = (event) => {
-      if (!ref.current?.contains(event.target)) setOpen(false);
-    };
-    const onKey = (event) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
-  if (!items.length) return null;
-  const active = items.some((item) => item.view === route);
-
-  return (
-    <div className="nav-more" ref={ref}>
-      <button
-        type="button"
-        className={cx('app-link', 'nav-more-btn', active && 'is-active')}
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        aria-haspopup="menu"
-      >
-        More
-        <ChevronDown size={12} strokeWidth={1.9} />
-      </button>
-      {open && (
-        <div className="nav-more-menu" role="menu">
-          {items.map((item) => (
-            <button
-              key={item.view}
-              type="button"
-              role="menuitem"
-              className={cx('nav-more-item', route === item.view && 'is-active')}
-              onClick={() => {
-                setOpen(false);
-                go(item.view);
-              }}
-              aria-current={route === item.view ? 'page' : undefined}
-            >
-              <item.Icon size={14} strokeWidth={1.8} />
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 

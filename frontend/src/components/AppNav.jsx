@@ -20,17 +20,18 @@ import { Avatar, cx } from '../ui.jsx';
 import { LogoMark } from './Logo.jsx';
 import NewProjectModal from './NewProjectModal.jsx';
 
-// Every project view is a top-level tab. The dashboard is not hidden inside a
-// menu, so it cannot be confused with the Workspaces hub.
+// Every project view is a top-level tab, always visible. A view the current
+// role cannot use opens the page-level "not available" notice instead of
+// disappearing from the bar, so the navigation never changes shape.
 const ITEMS = [
   { view: 'workspaces', label: 'Workspaces', Icon: LayoutGrid },
   { view: 'overview', label: 'Dashboard', Icon: LayoutGrid },
-  { view: 'departure', label: 'Departure', Icon: ArrowRightLeft, permission: 'project:manage' },
-  { view: 'sources', label: 'Sources', Icon: Database, permission: 'source:connect' },
-  { view: 'activity', label: 'Activity', Icon: Activity, permission: 'audit:read' },
-  { view: 'knowledge', label: 'Knowledge', Icon: Network, permission: 'claim:review' },
-  { view: 'claims', label: 'Evidence', Icon: ListChecks, permission: 'claim:review' },
-  { view: 'gaps', label: 'Risks', Icon: AlertTriangle, permission: 'claim:review' },
+  { view: 'departure', label: 'Departure', Icon: ArrowRightLeft },
+  { view: 'sources', label: 'Sources', Icon: Database },
+  { view: 'activity', label: 'Activity', Icon: Activity },
+  { view: 'knowledge', label: 'Knowledge', Icon: Network },
+  { view: 'claims', label: 'Evidence', Icon: ListChecks },
+  { view: 'gaps', label: 'Risks', Icon: AlertTriangle },
   { view: 'handover', label: 'Handover', Icon: FileText },
   { view: 'workspace', label: 'Incoming', Icon: Laptop },
 ];
@@ -40,7 +41,6 @@ export default function AppNav() {
   const [newProject, setNewProject] = useState(false);
   const inputRef = useRef(null);
   const attention = (summary?.counts?.severeGaps ?? 0) + (summary?.counts?.pendingClaims ?? 0);
-  const allowed = (permission) => !permission || summary?.permissions?.includes(permission);
 
   useEffect(() => {
     const onKey = (event) => {
@@ -66,7 +66,7 @@ export default function AppNav() {
           </button>
 
           <nav className="app-links" aria-label="Project">
-            {ITEMS.filter((item) => allowed(item.permission)).map((item) => (
+            {ITEMS.map((item) => (
               <button
                 key={item.view}
                 type="button"

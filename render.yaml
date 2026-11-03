@@ -1,0 +1,38 @@
+# Render blueprint for ContextBridge.
+#
+# Deploy: Render dashboard → New → Blueprint → pick ShashwaTTrigunayaT/ContextBridge.
+# Render reads this file, builds the Dockerfile and attaches the disk below.
+#
+# The disk is what makes this a real deployment rather than a demo: the SQLite
+# file holds every imported record, claim and handover version. Render's free
+# plan has no disks, so `plan` is starter; drop to `free` only if you accept
+# that all workspace data resets on every restart or redeploy.
+
+services:
+  - type: web
+    name: contextbridge
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: singapore
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # SQLite lives on the mounted disk, not in the image.
+      - key: CONTEXTBRIDGE_DB
+        value: /var/data/contextbridge.db
+      # Public deployments should not print demo passwords on the sign-in page.
+      - key: EXPOSE_INSTALL_ACCOUNTS
+        value: "false"
+      # Generated once by Render and kept secret; required to sign in.
+      - key: INSTALL_PASSWORD
+        generateValue: true
+      # Optional. Without it the assistant answers deterministically with no model call.
+      - key: GROQ_API_KEY
+        sync: false
+    disk:
+      name: contextbridge-data
+      mountPath: /var/data
+      sizeGB: 1

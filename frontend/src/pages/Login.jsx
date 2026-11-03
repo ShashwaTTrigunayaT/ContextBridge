@@ -6,8 +6,8 @@ import { LogoMark } from '../components/Logo.jsx';
 
 export default function Login() {
   const { login } = useApp();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('reviewer@contextbridge.local');
+  const [password, setPassword] = useState('contextbridge');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 

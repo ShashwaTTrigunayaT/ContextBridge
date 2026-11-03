@@ -30,10 +30,13 @@ export default function Claims() {
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [record, setRecord] = useState(null);
+  const [assist, setAssist] = useState(null);
+  const [assisting, setAssisting] = useState(false);
 
   const claims = data?.claims ?? [];
   const categories = data?.categories ?? {};
   const canReview = summary?.permissions?.includes('claim:review');
+  const canAssist = canReview && summary?.assistant?.llmEnabled;
 
   const filtered = claims.filter((claim) => {
     if (category !== 'all' && claim.category !== category) return false;
@@ -53,6 +56,22 @@ export default function Claims() {
     setAction(null);
     setReason('');
     setDraftText('');
+    setAssist(null);
+  }
+
+  // Advisory only: the model sees the same excerpts a reviewer can see and the
+  // human still makes the decision.
+  async function checkWithModel() {
+    if (!selected || assisting) return;
+    setAssisting(true);
+    try {
+      const result = await api(`/projects/${projectId}/claims/${selected.id}/assist`, { method: 'POST' });
+      setAssist(result);
+    } catch (err) {
+      notify(err.message, 'error');
+    } finally {
+      setAssisting(false);
+    }
   }
 
   async function review(kind) {
@@ -166,6 +185,7 @@ export default function Claims() {
                       <CategoryBadge category={claim.category} label={claim.categoryLabel} />
                       <Strength value={claim.evidenceStrength} />
                       <StatusPill status={claim.status} />
+                      {claim.signal?.startsWith('llm:') && <Badge tone="violet">model-assisted</Badge>}
                       {claim.evidence.length === 0 && <Badge tone="critical">restricted evidence</Badge>}
                       {claim.evidence.length > 0 && (
                         <span className="claim-sources">
@@ -232,11 +252,49 @@ export default function Claims() {
                   )}
                 </div>
 
+                {assist && (
+                  <div className={`ai-assist ai-${assist.assessment.verdict}`}>
+                    <header>
+                      <Badge
+                        tone={
+                          assist.assessment.verdict === 'supported'
+                            ? 'success'
+                            : assist.assessment.verdict === 'weak'
+                              ? 'warning'
+                              : 'critical'
+                        }
+                      >
+                        {assist.assessment.verdict}
+                      </Badge>
+                      <strong>Model review</strong>
+                      <span className="hint">advisory · {assist.model}</span>
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        onClick={() => setAssist(null)}
+                        aria-label="Dismiss model review"
+                      >
+                        <Icon name="x" size={12} />
+                      </button>
+                    </header>
+                    <p>{assist.assessment.rationale || 'No rationale returned.'}</p>
+                    {assist.assessment.missingEvidence && (
+                      <p className="hint">To settle it: {assist.assessment.missingEvidence}</p>
+                    )}
+                    <p className="hint">This is a suggestion. Verifying, correcting or rejecting stays with you.</p>
+                  </div>
+                )}
+
                 {canReview && (
                   <div className="review-actions">
                     <Btn variant="primary" size="sm" icon="check" onClick={() => review('verify')} disabled={busy}>
                       Verify
                     </Btn>
+                    {canAssist && (
+                      <Btn variant="ghost" size="sm" icon="sparkles" onClick={checkWithModel} disabled={assisting}>
+                        {assisting ? 'Checking…' : 'Check with model'}
+                      </Btn>
+                    )}
                     <Btn variant="ghost" size="sm" icon="file" onClick={() => { setAction('edit'); setDraftText(selected.text); }}>
                       Correct text
                     </Btn>

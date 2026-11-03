@@ -1,8 +1,10 @@
 import { useState } from 'react';
+import { Check } from 'lucide-react';
 import { api } from '../api.js';
 import { useApp } from '../store.jsx';
 import { useAsync } from '../hooks.js';
 import { DocumentSections, GapList, SECTIONS } from '../components/Document.jsx';
+import AcknowledgementCard from '../components/Acknowledgement.jsx';
 import { Badge, Btn, Empty, Field, Icon, Loading, Modal, Panel, StatCard } from '../ui.jsx';
 
 export default function Handover() {
@@ -71,7 +73,8 @@ export default function Handover() {
             <div>
               <p className="eyebrow">{draft ? 'Working draft' : 'Approved handover'}</p>
               <h2>
-                {content.meta?.project?.name ?? 'Project'} — for {content.meta?.transitionUser?.name ?? 'the incoming member'}
+                {content.meta?.project?.name ?? 'Project'} — for{' '}
+                {content.meta?.transfer?.contributor ?? content.meta?.transitionUser?.name ?? 'the incoming member'}
               </h2>
               <p className="muted">
                 Generated {new Date(content.meta?.generatedAt ?? Date.now()).toLocaleString()} from{' '}
@@ -97,6 +100,39 @@ export default function Handover() {
             </div>
           )}
 
+          {content.transfer && (
+            <section className="transfer-brief">
+              <header className="transfer-brief-head">
+                <span className="transfer-brief-icon">
+                  <Icon name="branch" size={15} />
+                </span>
+                <div>
+                  <p className="eyebrow">Departure scope</p>
+                  <h3>
+                    {content.transfer.contributor ?? 'The departing member'} is transferring{' '}
+                    {content.transfer.responsibilities.length} responsibilities
+                  </h3>
+                </div>
+                <Badge tone="accent">{content.transfer.components.length} areas</Badge>
+              </header>
+              <ul className="transfer-brief-list">
+                {content.transfer.responsibilities.slice(0, 6).map((item, index) => (
+                  <li key={`${item.claimId ?? item.text}-${index}`}>
+                    <Check size={12} strokeWidth={2.5} />
+                    <span>{item.text}</span>
+                    {item.component && <span className="chip mono">{item.component}</span>}
+                  </li>
+                ))}
+              </ul>
+              {content.transfer.responsibilities.length > 6 && (
+                <p className="hint">
+                  +{content.transfer.responsibilities.length - 6} more selected responsibilities are marked in the
+                  sections below.
+                </p>
+              )}
+            </section>
+          )}
+
           <div className="stats">
             <StatCard label="Evidence coverage" value={`${metrics.evidenceCoverage ?? 0}%`} progress={metrics.evidenceCoverage} hint="claims with a source excerpt" />
             <StatCard label="Corroborated" value={`${metrics.corroborationRate ?? 0}%`} progress={metrics.corroborationRate} hint="claims backed by 2+ sources" tone="accent" />
@@ -112,6 +148,17 @@ export default function Handover() {
                 restricted sources stay out of the shared copy. Approval freezes this version for incoming members.
               </span>
             </div>
+          )}
+
+          {!draft && (
+            <AcknowledgementCard
+              projectId={projectId}
+              data={data}
+              onDone={async () => {
+                await reload();
+                await refresh();
+              }}
+            />
           )}
 
           <DocumentSections content={content} />

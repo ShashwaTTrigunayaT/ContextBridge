@@ -16,6 +16,7 @@ import Handover from './pages/Handover.jsx';
 import Workspace from './pages/Workspace.jsx';
 import Workspaces from './pages/Workspaces.jsx';
 import Activity from './pages/Activity.jsx';
+import Departure from './pages/Departure.jsx';
 import Home from './pages/site/Home.jsx';
 import Platform from './pages/site/Platform.jsx';
 import KnowledgeGraphPage from './pages/site/KnowledgeGraphPage.jsx';
@@ -44,6 +45,7 @@ const APP_ROUTES = {
   handover: Handover,
   workspace: Workspace,
   activity: Activity,
+  departure: Departure,
 };
 
 const PAGE_META = {
@@ -56,9 +58,16 @@ const PAGE_META = {
   handover: { title: 'Handover workspace', subtitle: 'The reviewable document, backed by evidence' },
   workspace: { title: 'Incoming member workspace', subtitle: 'Continue the work from approved knowledge' },
   activity: { title: 'Project activity', subtitle: 'Imports, reviews, approvals and denied access' },
+  departure: { title: 'Departure & transfer', subtitle: 'Who is leaving, and which responsibilities move with them' },
 };
 
-const REQUIRED = { sources: 'source:connect', claims: 'claim:review', gaps: 'claim:review', knowledge: 'claim:review' };
+const REQUIRED = {
+  sources: 'source:connect',
+  claims: 'claim:review',
+  gaps: 'claim:review',
+  knowledge: 'claim:review',
+  departure: 'project:manage',
+};
 
 export default function App() {
   const { booting, user, route, projects, summary, toasts, dismissToast, go } = useApp();

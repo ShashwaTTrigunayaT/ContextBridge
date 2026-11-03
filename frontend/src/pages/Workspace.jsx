@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { useApp } from '../store.jsx';
 import { useAsync } from '../hooks.js';
 import { DocumentSections, GapList } from '../components/Document.jsx';
+import AcknowledgementCard from '../components/Acknowledgement.jsx';
 import { Badge, Btn, Empty, Icon, Loading, StatCard } from '../ui.jsx';
 
 const SUGGESTIONS = [
@@ -15,8 +16,8 @@ const SUGGESTIONS = [
 ];
 
 export default function Workspace() {
-  const { projectId, summary } = useApp();
-  const { data, loading, error } = useAsync(() => api(`/projects/${projectId}/handover`), [projectId]);
+  const { projectId, summary, refresh } = useApp();
+  const { data, loading, error, reload } = useAsync(() => api(`/projects/${projectId}/handover`), [projectId]);
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
@@ -89,6 +90,15 @@ export default function Workspace() {
         <StatCard label="Unfinished work" value={content.sections?.unfinishedWork?.length ?? 0} hint="open PRs and issues" tone="neutral" />
         <StatCard label="Known risks" value={content.sections?.risks?.length ?? 0} hint={`${content.gaps?.length ?? 0} recorded gaps`} tone="critical" />
       </div>
+
+      <AcknowledgementCard
+        projectId={projectId}
+        data={data}
+        onDone={async () => {
+          await reload();
+          await refresh();
+        }}
+      />
 
       <div className="doc-layout">
         <div className="doc-main">

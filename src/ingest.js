@@ -268,7 +268,14 @@ export function importDocument(projectId, sourceId, document) {
     state: 'final',
     url: null,
     occurredAt: document.occurredAt ?? now(),
-    metadata: { filename, classification: document.visibility === 'restricted' ? 'restricted' : 'internal' },
+    metadata: {
+      filename,
+      classification: document.visibility === 'restricted' ? 'restricted' : 'internal',
+      // The original file format is kept so a reviewer can see that a claim came
+      // from a PDF or Word document rather than a hand-typed note.
+      ...(document.format ? { format: document.format } : {}),
+      ...(document.pages ? { pages: document.pages } : {}),
+    },
   });
   run('UPDATE sources SET status = ?, last_synced_at = ? WHERE id = ?', 'synced', now(), sourceId);
   return { imported: 1 };

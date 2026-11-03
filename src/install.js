@@ -17,6 +17,8 @@ const TABLES = [
   'reviews',
   'handover_versions',
   'handovers',
+  'acknowledgements',
+  'github_connections',
   'sources',
   'audit_logs',
   'memberships',

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  ArrowRightLeft,
   Bell,
   ChevronDown,
   Database,
@@ -24,6 +25,7 @@ import NewProjectModal from './NewProjectModal.jsx';
 const ITEMS = [
   { view: 'workspaces', label: 'Workspaces', Icon: LayoutGrid },
   { view: 'overview', label: 'Dashboard', Icon: LayoutGrid },
+  { view: 'departure', label: 'Departure', Icon: ArrowRightLeft, permission: 'project:manage' },
   { view: 'sources', label: 'Sources', Icon: Database, permission: 'source:connect' },
   { view: 'activity', label: 'Activity', Icon: Activity, permission: 'audit:read' },
   { view: 'knowledge', label: 'Knowledge', Icon: Network, permission: 'claim:review' },

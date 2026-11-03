@@ -32,6 +32,20 @@ services:
       # Optional. Without it the assistant answers deterministically with no model call.
       - key: GROQ_API_KEY
         sync: false
+      # Optional. Set to "false" to keep extraction deterministic even with a key.
+      - key: LLM_EXTRACTION
+        value: "true"
+      # Optional GitHub OAuth app. Without these, public repositories and a
+      # pasted read-only token still work.
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_OAUTH_SCOPE
+        value: repo read:user
+      # Optional. Only needed when the callback URL differs from this host.
+      - key: GITHUB_OAUTH_REDIRECT
+        sync: false
     disk:
       name: contextbridge-data
       mountPath: /var/data

@@ -1,4 +1,5 @@
 import express from 'express';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,12 +18,31 @@ import {
   verifyPassword,
 } from './auth.js';
 import { importDocument, importLiveGithub } from './ingest.js';
-import { claimEvidence, CLAIM_CATEGORIES, reconstruct } from './extract.js';
-import { approvedSnapshot, approveHandover, buildHandover, ensureHandover } from './handover.js';
+import { augmentWithModel, claimEvidence, CLAIM_CATEGORIES, reconstruct } from './extract.js';
+import {
+  acknowledgeHandover,
+  acknowledgementsFor,
+  approvedSnapshot,
+  approveHandover,
+  buildHandover,
+  ensureHandover,
+} from './handover.js';
 import { answerQuestion, auditTrail } from './assistant.js';
 import { ensureInstall, installAccountList } from './install.js';
 import { isRepoSlug } from './repos.js';
-import { llmEnabled, llmModel } from './llm.js';
+import { assessClaimWithModel, extractionEnabled, llmEnabled, llmModel } from './llm.js';
+import { documentFormat, extractDocumentText } from './documents.js';
+import {
+  authorizeUrl,
+  connectionToken,
+  disconnectConnection,
+  exchangeCode,
+  fetchViewer,
+  githubStatus,
+  listRepositories,
+  oauthConfigured,
+  saveConnection,
+} from './github.js';
 
 function parseCookies(header) {
   const cookies = {};
@@ -95,18 +115,26 @@ function projectSummary(projectId, userId, role) {
     viewer: { id: userId, seesRestrictedSources: seesRestrictedSources(role) },
     transitionUser,
     members: membersOf(projectId),
-    sources: sources.map((source) => ({
-      id: source.id,
-      kind: source.kind,
-      name: source.name,
-      ref: source.ref,
-      visibility: source.visibility,
-      status: source.status,
-      createdAt: source.created_at,
-      lastSyncedAt: source.last_synced_at,
-      records: get('SELECT COUNT(*) AS count FROM source_records WHERE source_id = ?', source.id)?.count ?? 0,
-      error: parseJson(source.meta, {}).error ?? null,
-    })),
+    sources: sources.map((source) => {
+      const meta = parseJson(source.meta, {});
+      return {
+        id: source.id,
+        kind: source.kind,
+        name: source.name,
+        ref: source.ref,
+        visibility: source.visibility,
+        status: source.status,
+        createdAt: source.created_at,
+        lastSyncedAt: source.last_synced_at,
+        records: get('SELECT COUNT(*) AS count FROM source_records WHERE source_id = ?', source.id)?.count ?? 0,
+        error: meta.error ?? null,
+        mode: meta.mode ?? (source.kind === 'github' ? 'live' : 'upload'),
+        tokenSource: meta.tokenSource ?? null,
+        format: meta.format ?? null,
+        pages: meta.pages ?? null,
+        repo: meta.repo ?? null,
+      };
+    }),
     components: all("SELECT name, metadata FROM entities WHERE project_id = ? AND type = 'component'", projectId)
       .map((row) => ({ name: row.name, ...parseJson(row.metadata) }))
       .sort((a, b) => (b.records ?? 0) - (a.records ?? 0)),
@@ -133,6 +161,10 @@ function projectSummary(projectId, userId, role) {
       approvedBy: approved?.created_by
         ? get('SELECT name FROM users WHERE id = ?', approved.created_by)?.name ?? null
         : null,
+      focus: parseJson(handover?.focus, null),
+      acknowledgement: approved
+        ? acknowledgementsFor(projectId).find((entry) => entry.version === approved.version) ?? null
+        : null,
     },
     assistant: { llmEnabled: llmEnabled(), model: llmEnabled() ? llmModel() : 'deterministic-retrieval' },
   };
@@ -140,10 +172,13 @@ function projectSummary(projectId, userId, role) {
 
 export function createApp() {
   const app = express();
-  // A fresh database gets its organization and sign-in accounts. No project or
-  // source is created: the workspace stays empty until a repository is connected.
+  // Behind a host proxy the protocol and host must come from X-Forwarded-* so the
+  // OAuth callback URL matches the one registered with GitHub.
+  app.set('trust proxy', true);
+  // A source review can attach a PDF, so the JSON limit covers a base64 payload
+  // of the same size the document parser accepts.
   ensureInstall();
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '16mb' }));
 
   app.use((req, res, next) => {
     const cookies = parseCookies(req.headers.cookie);
@@ -315,6 +350,12 @@ export function createApp() {
     }
     const visibility = req.body?.visibility === 'restricted' ? 'restricted' : 'team';
     const name = String(req.body?.name ?? `GitHub — ${repo}`).trim();
+    const pasted = String(req.body?.token ?? '').trim();
+    // A stored OAuth connection is used when no token is pasted, so a later sync
+    // can read the same repository without asking for a credential again.
+    const oauthToken = connectionToken(req.user.id);
+    const token = pasted || oauthToken || '';
+    const tokenSource = pasted ? 'token' : oauthToken ? 'oauth' : 'anonymous';
     const sourceId = uid('src');
     run(
       `INSERT INTO sources (id, project_id, kind, name, ref, visibility, status, meta, created_by, created_at)
@@ -324,15 +365,20 @@ export function createApp() {
       name,
       repo,
       visibility,
-      JSON.stringify({ mode: 'live', repo }),
+      JSON.stringify({ mode: 'live', repo, tokenSource }),
       req.user.id,
       now(),
     );
     try {
       const result = await importLiveGithub(context.project.id, sourceId, {
         repo,
-        token: req.body?.token,
+        token,
       });
+      run(
+        'UPDATE sources SET meta = ? WHERE id = ?',
+        JSON.stringify({ mode: 'live', repo, tokenSource, error: null }),
+        sourceId,
+      );
       audit(context.project.id, req.user.id, 'source.import', sourceId, `${repo} (${result.imported} records)`);
       return res.status(201).json({ sourceId, ...result });
     } catch (error) {
@@ -342,25 +388,74 @@ export function createApp() {
     }
   });
 
-  app.post('/api/projects/:projectId/sources/documents', (req, res) => {
+  // Re-read a connected repository in place. Records are upserted, so the source
+  // keeps its identity and the claims built from it keep their evidence links.
+  app.post('/api/projects/:projectId/sources/:sourceId/sync', async (req, res) => {
+    const context = projectContext(req, res, 'source:connect');
+    if (!context) return;
+    const source = get('SELECT * FROM sources WHERE id = ? AND project_id = ?', req.params.sourceId, context.project.id);
+    if (!source) return res.status(404).json({ error: 'Source not found' });
+    if (source.kind !== 'github') {
+      return res.status(400).json({ error: 'Only repository sources can be re-synced. Upload the document again to replace it.' });
+    }
+    const pasted = String(req.body?.token ?? '').trim();
+    const oauthToken = connectionToken(req.user.id);
+    const token = pasted || oauthToken || '';
+    const tokenSource = pasted ? 'token' : oauthToken ? 'oauth' : 'anonymous';
+    run('UPDATE sources SET status = ? WHERE id = ?', 'connecting', source.id);
+    try {
+      const result = await importLiveGithub(context.project.id, source.id, { repo: source.ref, token });
+      run(
+        'UPDATE sources SET meta = ? WHERE id = ?',
+        JSON.stringify({ mode: 'live', repo: source.ref, tokenSource, error: null }),
+        source.id,
+      );
+      audit(context.project.id, req.user.id, 'source.sync', source.id, `${source.ref} (${result.imported} records)`);
+      return res.json({ sourceId: source.id, ...result });
+    } catch (error) {
+      run(
+        'UPDATE sources SET status = ?, meta = ? WHERE id = ?',
+        'error',
+        JSON.stringify({ mode: 'live', repo: source.ref, tokenSource, error: error.message }),
+        source.id,
+      );
+      audit(context.project.id, req.user.id, 'source.error', source.id, error.message);
+      return res.status(502).json({ error: `Sync failed: ${error.message}`, sourceId: source.id });
+    }
+  });
+
+  // A document source takes the original file: PDF and DOCX are parsed here,
+  // Markdown and plain text may be uploaded or pasted.
+  app.post('/api/projects/:projectId/sources/documents', async (req, res) => {
     const context = projectContext(req, res, 'source:connect');
     if (!context) return;
     const filename = String(req.body?.filename ?? '').trim();
     if (!filename) return res.status(400).json({ error: 'A document filename is required' });
-    if (!String(req.body?.body ?? '').trim()) return res.status(400).json({ error: 'Document content is empty' });
-    if (!/\.(md|txt|markdown)$/i.test(filename)) {
-      return res.status(400).json({ error: 'Only .md, .markdown and .txt documents are supported in this build (PDF/DOCX extraction is listed as future work).' });
+    const format = documentFormat(filename);
+    if (!format) {
+      return res.status(400).json({ error: 'Unsupported document. Upload a PDF, DOCX, Markdown or plain-text file.' });
     }
     const visibility = req.body?.visibility === 'restricted' ? 'restricted' : 'team';
+    let extracted;
+    try {
+      extracted = await extractDocumentText({
+        filename,
+        base64: req.body?.content,
+        text: req.body?.body,
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
     const sourceId = uid('src');
     run(
       `INSERT INTO sources (id, project_id, kind, name, ref, visibility, status, meta, created_by, created_at)
-       VALUES (?, ?, 'document', ?, ?, ?, 'connecting', '{}', ?, ?)`,
+       VALUES (?, ?, 'document', ?, ?, ?, 'connecting', ?, ?, ?)`,
       sourceId,
       context.project.id,
       filename,
       filename,
       visibility,
+      JSON.stringify({ mode: 'upload', format: extracted.format, classification: visibility, pages: extracted.pages ?? null }),
       req.user.id,
       now(),
     );
@@ -368,12 +463,26 @@ export function createApp() {
       importDocument(context.project.id, sourceId, {
         filename,
         title: req.body?.title,
-        body: req.body.body,
+        body: extracted.text,
         author: req.user.name,
         visibility,
+        format: extracted.format,
+        pages: extracted.pages,
       });
-      audit(context.project.id, req.user.id, 'source.document', sourceId, `${filename} (${visibility})`);
-      return res.status(201).json({ sourceId, imported: 1 });
+      audit(
+        context.project.id,
+        req.user.id,
+        'source.document',
+        sourceId,
+        `${filename} (${extracted.format}${extracted.pages ? `, ${extracted.pages} pages` : ''}, ${visibility})`,
+      );
+      return res.status(201).json({
+        sourceId,
+        imported: 1,
+        format: extracted.format,
+        pages: extracted.pages ?? null,
+        characters: extracted.text.length,
+      });
     } catch (error) {
       run('UPDATE sources SET status = ?, meta = ? WHERE id = ?', 'error', JSON.stringify({ error: error.message }), sourceId);
       return res.status(400).json({ error: error.message });
@@ -403,7 +512,7 @@ export function createApp() {
     return res.json({ ok: true });
   });
 
-  app.post('/api/projects/:projectId/reconstruct', (req, res) => {
+  app.post('/api/projects/:projectId/reconstruct', async (req, res) => {
     const context = projectContext(req, res, 'reconstruct');
     if (!context) return;
     if (approvedSnapshot(context.project.id)) {
@@ -420,17 +529,134 @@ export function createApp() {
       run('DELETE FROM reviews WHERE claim_id IS NOT NULL AND claim_id IN (SELECT id FROM claims WHERE project_id = ?)', context.project.id);
       const summary = reconstruct(context.project.id, { transitionUserId });
       ensureHandover(context.project.id, { transitionUserId, createdBy: req.user.id });
+      // Optional model pass. It only adds pending claims that keep their origin
+      // record; a model failure leaves the deterministic reconstruction intact.
+      let ai = { enabled: false, added: 0, considered: 0 };
+      try {
+        ai = await augmentWithModel(context.project.id);
+      } catch (error) {
+        console.error('[contextbridge] model extraction failed:', error.message);
+      }
       audit(
         context.project.id,
         req.user.id,
         'project.reconstruct',
         context.project.id,
-        `${summary.claims} claims, ${summary.gaps} gaps from ${summary.records} records`,
+        `${summary.claims} claims (+${ai.added ?? 0} model-assisted), ${summary.gaps} gaps from ${summary.records} records`,
       );
-      res.json({ ...summary, summary: projectSummary(context.project.id, req.user.id, context.role) });
+      res.json({ ...summary, ai, summary: projectSummary(context.project.id, req.user.id, context.role) });
     } catch (error) {
       res.status(500).json({ error: `Reconstruction failed: ${error.message}` });
     }
+  });
+
+  // Departure scope: which contributor is leaving and which responsibilities
+  // move with the handover. It is stored on the handover, not as a new project.
+  app.get('/api/projects/:projectId/transition', (req, res) => {
+    const context = projectContext(req, res, 'handover:read-draft');
+    if (!context) return;
+    const handover = get('SELECT * FROM handovers WHERE project_id = ? ORDER BY created_at DESC LIMIT 1', context.project.id);
+    const approved = approvedSnapshot(context.project.id);
+    const contributors = all(
+      "SELECT name, metadata FROM entities WHERE project_id = ? AND type = 'person' ORDER BY name",
+      context.project.id,
+    ).map((row) => ({ name: row.name, ...parseJson(row.metadata) }));
+    const components = all(
+      "SELECT name, metadata FROM entities WHERE project_id = ? AND type = 'component' ORDER BY name",
+      context.project.id,
+    ).map((row) => ({ name: row.name, ...parseJson(row.metadata) }));
+    const candidates = all(
+      `SELECT id, category, text, component, status FROM claims
+        WHERE project_id = ? AND status <> 'rejected'
+          AND category IN ('responsibility','unfinished','in_progress','decision','dependency','risk','blocker','question')
+        ORDER BY category, created_at`,
+      context.project.id,
+    ).map((row) => ({
+      id: row.id,
+      category: row.category,
+      categoryLabel: CLAIM_CATEGORIES[row.category] ?? row.category,
+      text: row.text,
+      component: row.component,
+      status: row.status,
+    }));
+    res.json({
+      focus: parseJson(handover?.focus, null),
+      locked: Boolean(approved),
+      approvedVersion: approved?.version ?? null,
+      transitionUser: context.project.transition_user_id
+        ? get('SELECT id, name, email, title FROM users WHERE id = ?', context.project.transition_user_id)
+        : null,
+      members: membersOf(context.project.id),
+      contributors,
+      components,
+      candidates,
+    });
+  });
+
+  app.post('/api/projects/:projectId/transition', (req, res) => {
+    const context = projectContext(req, res, 'project:manage');
+    if (!context) return;
+    if (approvedSnapshot(context.project.id)) {
+      return res.status(409).json({
+        error: 'This handover is already approved. Create a new transition project to record a different departure scope.',
+      });
+    }
+    const contributor = String(req.body?.contributor ?? '').trim();
+    if (!contributor) return res.status(400).json({ error: 'Choose the contributor who is leaving.' });
+    const contributorUserId = String(req.body?.contributorUserId ?? '').trim() || null;
+    if (contributorUserId && !roleFor(contributorUserId, context.project.id)) {
+      return res.status(400).json({ error: 'The departing member must be a member of this project.' });
+    }
+
+    const seen = new Set();
+    const responsibilities = [];
+    const componentSet = new Set();
+    for (const item of Array.isArray(req.body?.responsibilities) ? req.body.responsibilities : []) {
+      const text = String(item?.text ?? '').trim();
+      if (!text) continue;
+      const claimId = String(item?.claimId ?? '').trim() || null;
+      if (claimId && !get('SELECT id FROM claims WHERE id = ? AND project_id = ?', claimId, context.project.id)) continue;
+      const key = claimId ?? text.toLowerCase().slice(0, 120);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const component = String(item?.component ?? '').trim() || null;
+      if (component) componentSet.add(component);
+      responsibilities.push({
+        claimId,
+        text: text.slice(0, 340),
+        category: String(item?.category ?? '').trim() || null,
+        component,
+      });
+      if (responsibilities.length >= 40) break;
+    }
+    for (const component of Array.isArray(req.body?.components) ? req.body.components : []) {
+      const name = String(component ?? '').trim();
+      if (name) componentSet.add(name);
+    }
+    if (!responsibilities.length) {
+      return res.status(400).json({ error: 'Select at least one responsibility to transfer.' });
+    }
+
+    const focus = {
+      contributor,
+      contributorUserId,
+      responsibilities,
+      components: [...componentSet].slice(0, 30),
+      updatedAt: now(),
+      updatedBy: req.user.id,
+    };
+    if (contributorUserId) {
+      run('UPDATE projects SET transition_user_id = ? WHERE id = ?', contributorUserId, context.project.id);
+    }
+    ensureHandover(context.project.id, { transitionUserId: contributorUserId, createdBy: req.user.id, focus });
+    audit(
+      context.project.id,
+      req.user.id,
+      'transition.set',
+      contributorUserId ?? contributor,
+      `${responsibilities.length} responsibilities across ${focus.components.length} areas`,
+    );
+    res.json({ focus, summary: projectSummary(context.project.id, req.user.id, context.role) });
   });
 
   app.get('/api/projects/:projectId/claims', (req, res) => {
@@ -533,6 +759,32 @@ export function createApp() {
     });
   });
 
+  // Advisory second opinion. The model sees the same excerpts a reviewer can see
+  // and never edits, verifies or rejects the claim itself.
+  app.post('/api/projects/:projectId/claims/:claimId/assist', async (req, res) => {
+    const context = projectContext(req, res, 'claim:review');
+    if (!context) return;
+    if (!extractionEnabled()) {
+      return res.status(503).json({
+        error: 'Model assistance is not configured on this deployment. Set GROQ_API_KEY to enable it.',
+      });
+    }
+    const claim = get('SELECT * FROM claims WHERE id = ? AND project_id = ?', req.params.claimId, context.project.id);
+    if (!claim) return res.status(404).json({ error: 'Claim not found' });
+    const evidence = claimEvidence(claim.id, { includeRestricted: seesRestrictedSources(context.role) });
+    const assessment = await assessClaimWithModel({
+      claim: { text: claim.text, category: CLAIM_CATEGORIES[claim.category] ?? claim.category },
+      evidence,
+    });
+    if (!assessment) {
+      return res.status(502).json({
+        error: 'The model did not return a usable assessment. The claim and its evidence are unchanged.',
+      });
+    }
+    audit(context.project.id, req.user.id, 'claim.assist', claim.id, assessment.verdict);
+    return res.json({ assessment, model: llmModel(), advisory: true });
+  });
+
   app.get('/api/projects/:projectId/gaps', (req, res) => {
     const context = projectContext(req, res, 'handover:read-draft');
     if (!context) return;
@@ -556,6 +808,7 @@ export function createApp() {
   app.get('/api/projects/:projectId/handover', (req, res) => {
     const context = projectContext(req, res);
     if (!context) return;
+    const acknowledgements = acknowledgementsFor(context.project.id);
     if (can(context.role, 'handover:read-draft')) {
       const content = buildHandover(context.project.id, {
         viewerAllowsRestricted: seesRestrictedSources(context.role),
@@ -566,12 +819,17 @@ export function createApp() {
         content,
         canApprove: can(context.role, 'handover:approve'),
         canReview: can(context.role, 'claim:review'),
+        acknowledgements: [],
+        acknowledgement: null,
+        canAcknowledge: false,
       });
     }
     const approved = approvedSnapshot(context.project.id);
     if (!approved) {
       return res.status(403).json({ error: 'The handover has not been approved yet. Ask your reviewer to approve it.' });
     }
+    const versionAcknowledgements = acknowledgements.filter((entry) => entry.version === approved.version);
+    const mine = versionAcknowledgements.find((entry) => entry.userId === req.user.id) ?? null;
     return res.json({
       status: 'approved',
       version: approved.version,
@@ -579,6 +837,10 @@ export function createApp() {
       content: parseJson(approved.content, {}),
       canApprove: false,
       canReview: false,
+      acknowledgements: versionAcknowledgements,
+      acknowledgement: mine,
+      // The departing member cannot sign off their own handover.
+      canAcknowledge: !mine && context.role !== 'manager',
     });
   });
 
@@ -602,6 +864,36 @@ export function createApp() {
       });
     } catch (error) {
       res.status(500).json({ error: `Approval failed: ${error.message}` });
+    }
+  });
+
+  // The incoming member's final step: they confirm they have read the approved
+  // version and can leave questions for the departing member.
+  app.post('/api/projects/:projectId/handover/acknowledge', (req, res) => {
+    const context = projectContext(req, res);
+    if (!context) return;
+    if (context.role === 'manager' && context.project.transition_user_id === req.user.id) {
+      return res.status(403).json({ error: 'The departing member cannot acknowledge their own handover.' });
+    }
+    const approved = approvedSnapshot(context.project.id);
+    if (!approved) {
+      return res.status(409).json({ error: 'The handover must be approved before it can be acknowledged.' });
+    }
+    const note = String(req.body?.note ?? '').trim() || null;
+    const questions = (Array.isArray(req.body?.questions) ? req.body.questions : [])
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean)
+      .slice(0, 10);
+    try {
+      const acknowledgement = acknowledgeHandover({ projectId: context.project.id, userId: req.user.id, note, questions });
+      audit(context.project.id, req.user.id, 'handover.acknowledge', String(approved.version), note ?? '');
+      return res.json({
+        acknowledgement: { ...acknowledgement, user: req.user.name },
+        acknowledgements: acknowledgementsFor(context.project.id).filter((entry) => entry.version === approved.version),
+        summary: projectSummary(context.project.id, req.user.id, context.role),
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
     }
   });
 
@@ -676,6 +968,75 @@ export function createApp() {
     const context = projectContext(req, res, 'audit:read');
     if (!context) return;
     res.json({ entries: auditTrail(context.project.id) });
+  });
+
+  // GitHub connection management. The OAuth token belongs to the signed-in user,
+  // so it follows the user across projects rather than being copied per project.
+  app.get('/api/github/status', (req, res) => res.json(githubStatus(req.user.id)));
+
+  app.get('/api/github/oauth/start', (req, res) => {
+    if (!oauthConfigured()) {
+      return res.status(400).json({
+        error:
+          'GitHub OAuth is not configured on this deployment. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or connect with a read-only token.',
+      });
+    }
+    const state = randomBytes(18).toString('hex');
+    res.cookie('cb_oauth_state', state, { httpOnly: true, sameSite: 'lax', maxAge: 10 * 60e3, path: '/' });
+    return res.redirect(authorizeUrl({ req, state }));
+  });
+
+  app.get('/api/github/oauth/callback', async (req, res) => {
+    const cookies = parseCookies(req.headers.cookie);
+    const expected = cookies.cb_oauth_state;
+    const code = String(req.query.code ?? '');
+    // The outcome travels in a short-lived cookie: the hash router cannot carry a
+    // query string without the path failing to match a route.
+    const notice = (tone, message) => {
+      res.cookie('cb_github_notice', JSON.stringify({ tone, message }), {
+        httpOnly: false,
+        sameSite: 'lax',
+        maxAge: 120e3,
+        path: '/',
+      });
+      return res.redirect('/#/sources');
+    };
+    if (!oauthConfigured()) return notice('error', 'GitHub OAuth is not configured on this deployment.');
+    if (!code || !expected || req.query.state !== expected) {
+      return notice('error', 'The GitHub sign-in could not be verified. Try connecting again.');
+    }
+    try {
+      const token = await exchangeCode({ code, req });
+      const viewer = await fetchViewer(token.accessToken);
+      saveConnection({ userId: req.user.id, accessToken: token.accessToken, scope: token.scope, viewer });
+      audit(null, req.user.id, 'github.connect', viewer.login, token.scope ?? '');
+      res.clearCookie('cb_oauth_state', { path: '/' });
+      return notice('success', `GitHub connected as @${viewer.login}. Private repositories are now available.`);
+    } catch (error) {
+      audit(null, req.user.id, 'github.connect.error', null, error.message);
+      return notice('error', `GitHub connection failed: ${error.message}`);
+    }
+  });
+
+  app.post('/api/github/disconnect', (req, res) => {
+    const connection = disconnectConnection(req.user.id);
+    if (connection) audit(null, req.user.id, 'github.disconnect', connection.login, '');
+    res.json({ ok: true, connected: false });
+  });
+
+  app.get('/api/github/repos', async (req, res) => {
+    const token = connectionToken(req.user.id);
+    if (!token) {
+      return res.status(400).json({
+        error: 'Connect GitHub first, or paste a read-only token when connecting a repository.',
+      });
+    }
+    try {
+      const repos = await listRepositories(token);
+      res.json({ repos });
+    } catch (error) {
+      res.status(502).json({ error: error.message });
+    }
   });
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Unknown API route' }));

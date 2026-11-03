@@ -28,24 +28,29 @@ export const SECTION_TITLES = {
   nextActions: 'Next actions',
 };
 
-export function ensureHandover(projectId, { transitionUserId, createdBy } = {}) {
+export function ensureHandover(projectId, { transitionUserId, createdBy, focus } = {}) {
   const existing = get('SELECT * FROM handovers WHERE project_id = ? ORDER BY created_at DESC LIMIT 1', projectId);
   if (existing) {
     if (transitionUserId && existing.transition_user_id !== transitionUserId) {
       run('UPDATE handovers SET transition_user_id = ? WHERE id = ?', transitionUserId, existing.id);
       existing.transition_user_id = transitionUserId;
     }
+    if (focus !== undefined) {
+      run('UPDATE handovers SET focus = ? WHERE id = ?', focus ? JSON.stringify(focus) : null, existing.id);
+      existing.focus = focus ? JSON.stringify(focus) : null;
+    }
     return existing;
   }
   const id = uid('hnd');
   run(
-    `INSERT INTO handovers (id, project_id, transition_user_id, status, current_version, created_by, created_at)
-     VALUES (?, ?, ?, 'draft', 0, ?, ?)`,
+    `INSERT INTO handovers (id, project_id, transition_user_id, status, current_version, created_by, created_at, focus)
+     VALUES (?, ?, ?, 'draft', 0, ?, ?, ?)`,
     id,
     projectId,
     transitionUserId ?? null,
     createdBy ?? null,
     now(),
+    focus ? JSON.stringify(focus) : null,
   );
   return get('SELECT * FROM handovers WHERE id = ?', id);
 }
@@ -102,6 +107,22 @@ export function buildHandover(projectId, { viewerAllowsRestricted = false, forSh
     name: row.name,
     ...parseJson(row.metadata),
   }));
+
+  // The departure scope: one contributor and the responsibilities they hand on.
+  // It is a lens over the same evidence, never a separate document.
+  const focus = parseJson(handover?.focus, null);
+  const transferredClaimIds = new Set(
+    (focus?.responsibilities ?? []).map((item) => item.claimId).filter(Boolean),
+  );
+  const transfer = focus
+    ? {
+        contributor: focus.contributor ?? null,
+        contributorUserId: focus.contributorUserId ?? null,
+        responsibilities: focus.responsibilities ?? [],
+        components: focus.components ?? [],
+        updatedAt: focus.updatedAt ?? null,
+      }
+    : null;
 
   const sections = {
     workCompleted: [],
@@ -162,6 +183,7 @@ export function buildHandover(projectId, { viewerAllowsRestricted = false, forSh
       verification: claim.status,
       evidenceStrength: claim.evidence_strength,
       restrictedOnly,
+      transferred: transferredClaimIds.has(claim.id),
       reviewNote: claim.review_note ?? null,
       evidence,
     });
@@ -207,7 +229,9 @@ export function buildHandover(projectId, { viewerAllowsRestricted = false, forSh
       version: handover?.current_version ?? 0,
       viewerAllowsRestricted,
       forShared,
+      transfer,
     },
+    transfer,
     overview: {
       description: project.description,
       // A shared copy does not name the restricted sources it drew from.
@@ -280,6 +304,69 @@ export function approveHandover({ projectId, userId, summary }) {
   );
 
   return { versionId, version, pendingClaims, excludedClaims, content: shared };
+}
+
+export function acknowledgementsFor(projectId) {
+  return all(
+    `SELECT a.id, a.version, a.user_id, a.note, a.questions, a.created_at,
+            u.name AS user_name, u.email AS user_email
+       FROM acknowledgements a LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.project_id = ?
+      ORDER BY a.created_at DESC`,
+    projectId,
+  ).map((row) => ({
+    id: row.id,
+    version: row.version,
+    userId: row.user_id,
+    userName: row.user_name,
+    userEmail: row.user_email,
+    note: row.note,
+    questions: parseJson(row.questions, []),
+    acknowledgedAt: row.created_at,
+  }));
+}
+
+export function acknowledgeHandover({ projectId, userId, note, questions }) {
+  const approved = approvedSnapshot(projectId);
+  if (!approved) throw new Error('The handover must be approved before it can be acknowledged.');
+  const existing = get(
+    'SELECT * FROM acknowledgements WHERE project_id = ? AND version = ? AND user_id = ?',
+    projectId,
+    approved.version,
+    userId,
+  );
+  if (existing) {
+    run(
+      'UPDATE acknowledgements SET note = ?, questions = ?, created_at = ? WHERE id = ?',
+      note ?? null,
+      json(questions ?? []),
+      now(),
+      existing.id,
+    );
+  } else {
+    run(
+      'INSERT INTO acknowledgements (id, project_id, version, user_id, note, questions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      uid('ack'),
+      projectId,
+      approved.version,
+      userId,
+      note ?? null,
+      json(questions ?? []),
+      now(),
+    );
+  }
+  const row = get(
+    'SELECT * FROM acknowledgements WHERE project_id = ? AND version = ? AND user_id = ?',
+    projectId,
+    approved.version,
+    userId,
+  );
+  return {
+    version: approved.version,
+    acknowledgedAt: row.created_at,
+    note: row.note,
+    questions: parseJson(row.questions, []),
+  };
 }
 
 export function approvedSnapshot(projectId) {

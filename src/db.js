@@ -202,6 +202,32 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT NOT NULL
 );
 
+-- A per-user GitHub connection created through OAuth. The token is only used to
+-- read repositories this user can already access; it is never returned by the API.
+CREATE TABLE IF NOT EXISTS github_connections (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  login TEXT,
+  name TEXT,
+  avatar_url TEXT,
+  access_token TEXT NOT NULL,
+  scope TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- The incoming member's signature step: an approved version was read and accepted.
+CREATE TABLE IF NOT EXISTS acknowledgements (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  note TEXT,
+  questions TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(project_id, version, user_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_records_project ON source_records(project_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id);
 CREATE INDEX IF NOT EXISTS idx_claims_project ON claims(project_id);
@@ -213,6 +239,11 @@ CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_logs(project_id);
 // Lightweight migration for databases created before claims kept their origin record.
 const claimColumns = db.prepare('PRAGMA table_info(claims)').all().map((column) => column.name);
 if (!claimColumns.includes('record_id')) db.exec('ALTER TABLE claims ADD COLUMN record_id TEXT');
+
+// A handover may be scoped to one departing contributor and the responsibilities
+// they are transferring. Existing databases gain the column without a rebuild.
+const handoverColumns = db.prepare('PRAGMA table_info(handovers)').all().map((column) => column.name);
+if (!handoverColumns.includes('focus')) db.exec('ALTER TABLE handovers ADD COLUMN focus TEXT');
 
 export const uid = (prefix) => `${prefix}_${randomUUID().replace(/-/g, '').slice(0, 14)}`;
 export const now = () => new Date().toISOString();

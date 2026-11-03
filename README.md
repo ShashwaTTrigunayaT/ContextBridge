@@ -170,15 +170,21 @@ incoming member actually see. `/api/accounts` exposes the list (with passwords) 
 
 1. Sign in as **Reviewer** and open **Evidence**: a claim shows the exact excerpt, the record it came
    from and which source it belongs to. Strength is counted from records; verification is your call.
+   With a Groq key configured, **Check with model** adds an advisory read of the same excerpts.
 2. Open **Risks**: unassigned issues, PRs with no review, components only the departing engineer
    touched, unresolved questions and conflicting records.
 3. **Verify** a decision, **Correct** a risk claim, then **Reject** a draft PR — a reason is required.
-4. Open **Handover**, read the draft, then **Approve**. Restricted material is excluded from the shared
+4. Open **Sources** and upload a PDF, DOCX or note, or connect a GitHub repository. A connected GitHub
+   account lists your private repositories; a re-sync updates an existing source in place.
+5. Sign in as **Manager** and open **Departure**: choose the engineer who is leaving, tick the
+   responsibilities that move with them, and save. The handover draft opens with that scope.
+6. Open **Handover**, read the draft, then **Approve**. Restricted material is excluded from the shared
    copy and the version is frozen.
-5. Switch to **Incoming member**: the draft is gone and only the approved version is visible. Ask
-   *"What should I work on first?"* for a cited answer.
-6. Switch to **Administrator** and open **Activity**: approvals, corrections, rejections and denied
-   restricted-record access are all recorded.
+7. Switch to **Incoming member**: the draft is gone, only the approved version is visible, and
+   **Acknowledge handover** completes the workflow. Any note or question is recorded for the departing
+   member. Ask *"What should I work on first?"* for a cited answer.
+8. Switch to **Administrator** and open **Activity**: approvals, acknowledgements, corrections,
+   rejections and denied restricted-record access are all recorded.
 
 ---
 
@@ -190,12 +196,12 @@ frontend/                  React 19 client (Vite)
   src/App.jsx              routing: public site vs. signed-in workspace, role-gated pages
   src/store.jsx            session, workspace selection, summary state, hash routing
   src/ui.jsx               design system: icons, buttons, badges, avatars, modals, toasts
-  src/pages/               product: Workspaces, Overview, Sources, Claims, Gaps, Knowledge,
-                           Handover, Workspace, Activity
+  src/pages/               product: Workspaces, Overview, Departure, Sources, Claims, Gaps,
+                           Knowledge, Handover, Workspace, Activity
   src/pages/site/          public: Home, Platform, Knowledge Graph, Activity, Handover,
                            Security, Legal
   src/components/          horizontal navbars, footer, logo, knowledge graph, handover renderer,
-                           live site previews, charts
+                           acknowledgement card, live site previews, charts
   src/components/charts.jsx  bar, column and donut charts built only from API figures
   src/graph.js             knowledge graph derived from the project summary and stored claims
   src/styles.css           design tokens, layout, components, marketing sections
@@ -206,15 +212,19 @@ src/
   auth.js                  scrypt passwords, sessions, role permissions
   db.js                    SQLite schema (node:sqlite) and query helpers
   ingest.js                live GitHub and document import, normalization, chunking
+  documents.js             server-side PDF, DOCX, Markdown and text extraction
   extract.js               claim extraction, state derivation, evidence linking, next actions
   gaps.js                  rule- and relationship-based gap and conflict detection
-  handover.js              draft assembly, permission filtering, approval + version snapshot
+  handover.js              draft assembly, transfer scope, permission filtering, approval,
+                           version snapshot and incoming-member acknowledgements
   assistant.js             grounded retrieval over the approved snapshot
-  llm.js                   optional Groq rephrasing (never adds facts)
+  github.js                optional OAuth connection, token storage and repository listing
+  llm.js                   optional Groq rephrasing, model-assisted extraction and claim assessment
   install.js               install accounts and organization bootstrap
   repos.js                 suggested public repositories
 server.js                  starts the app
 test/pipeline.test.js      end-to-end workflow tests
+test/workflow.test.js      ingestion, departure scope, acknowledgement and GitHub tests
 test/llm.test.js           Groq adapter tests (mocked transport)
 ```
 
@@ -248,7 +258,7 @@ The interface is a light, restrained engineering product, not a chat dashboard.
 
 `users`, `sessions`, `organizations`, `projects`, `memberships`, `sources`, `source_records`,
 `chunks`, `entities`, `relationships`, `evidence`, `claims`, `gaps`, `handovers`,
-`handover_versions`, `reviews`, `audit_logs`.
+`handover_versions`, `reviews`, `acknowledgements`, `github_connections`, `audit_logs`.
 
 Nothing is stored as one generated document. The approved handover is a versioned snapshot, while
 claims, evidence rows, gaps and reviews remain separately queryable.
@@ -264,6 +274,11 @@ claims, evidence rows, gaps and reviews remain separately queryable.
    embeddings).
 4. **Strength** — `high` with two or more distinct sources and at least three excerpts, `medium` with
    independent corroboration, otherwise `low`.
+5. **Model-assisted pass (optional)** — when a Groq key is configured, records that mention rationale,
+   dependencies or ambiguity are sent once, and the model may propose extra claims. A proposal is kept
+   only if it names a record that was sent, uses a known category, is not a duplicate and has an
+   excerpt behind it. It is stored as `pending` with `signal = llm:extraction`, so a human still
+   decides. Set `LLM_EXTRACTION=false` to keep the pipeline fully deterministic even with a key.
 
 ### Gap detection
 
@@ -303,17 +318,29 @@ GROQ_API_KEY=gsk_… GROQ_MODEL=llama-3.1-8b-instant npm start
 # or put GROQ_API_KEY=gsk_… in .env — npm start loads .env and .env.local automatically
 ```
 
-The model only rephrases an already-grounded answer. If the key is missing, the call fails, times out
-(15s) or returns `INSUFFICIENT_EVIDENCE`, the deterministic answer is used — claims, gaps and approvals
-never depend on a model call. The adapter is covered by a mocked-transport test; no live key is
-required to run the suite.
+The model does three optional jobs, each with the same rule — it never becomes the source of truth:
+
+- **Answer rephrasing** — summarises an already-grounded list of claims. If the key is missing, the
+  call fails, times out (15s) or returns `INSUFFICIENT_EVIDENCE`, the deterministic answer is used.
+- **Model-assisted extraction** — proposes additional claims with their origin record after the
+  deterministic pass, as described above. Failures leave the reconstruction untouched.
+- **Claim assessment** — reads the same evidence excerpts a reviewer can see and returns
+  `supported`, `weak`, `conflicting` or `unsupported` plus a short rationale. It is advisory: it
+  cannot verify, correct or reject anything, and the result is not stored as a review.
+
+Set `LLM_EXTRACTION=false` to disable the second and third jobs while keeping answer rephrasing.
+All three are covered by mocked-transport tests; no live key is required to run the suite.
 
 ### Environment variables
 
 | Variable | Purpose |
 | --- | --- |
-| `GROQ_API_KEY` | Enables optional answer rephrasing |
+| `GROQ_API_KEY` | Enables the optional assistant and model-assisted extraction |
 | `GROQ_MODEL` | Overrides the Groq model |
+| `LLM_EXTRACTION` | Set `false` to keep extraction and claim assessment deterministic |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | Enable the GitHub OAuth connection |
+| `GITHUB_OAUTH_SCOPE` | OAuth scopes (default `repo read:user`) |
+| `GITHUB_OAUTH_REDIRECT` | Override the callback URL when the host differs from the origin |
 | `INSTALL_PASSWORD` | Password for the five install accounts |
 | `EXPOSE_INSTALL_ACCOUNTS` | Set to `false` to hide install accounts and passwords from `/api/accounts` |
 | `GITHUB_TOKEN` | Raises the GitHub rate limit and enables private repositories |
@@ -331,7 +358,7 @@ narrows the runtime so the whole thing is demonstrable on one machine:
 | --- | --- | --- |
 | PostgreSQL + pgvector | SQLite (`node:sqlite`) + lexical retrieval | Same structured tables, no infrastructure. Embeddings are the natural upgrade, not a claim made here. |
 | Redis + BullMQ | Synchronous ingestion and reconstruction | A few hundred records reconstruct in under a second; a queue would add failure modes without value at this size. |
-| GitHub OAuth | Live public-repo import with an optional token | OAuth app registration is external. A token is passed per request and never stored. |
+| GitHub OAuth | Optional OAuth app, with public import and a per-request token as fallbacks | OAuth app registration is external. Without credentials, public repositories and a pasted read-only token still work; a stored OAuth token is used for later syncs. |
 | Slack / Teams / Jira | Not built | The blueprint defers them to Round 3. |
 | Graph visualization | SVG relationship graph + component and contributor views | Relationships matter more than decoration; every edge is inspectable. |
 
@@ -340,8 +367,13 @@ narrows the runtime so the whole thing is demonstrable on one machine:
 - Workspace content reflects whichever repository was imported. Public marketing pages describe the
   product; their interface previews are built from the product's own components, and headline figures
   come from `/api/site-stats`, which reads the current workspace rather than a hard-coded number.
-- Document upload supports `.md`, `.markdown` and `.txt`. PDF and DOCX are rejected rather than
-  pretended to be parsed.
+- Document upload parses PDF (with a text layer), DOCX, `.md`/`.markdown` and `.txt`. Scanned PDFs
+  without a text layer are rejected with an explanation rather than stored as an empty source.
+  DOCX tables, charts and images are not interpreted, and the original file is not retained — only the
+  extracted text and its evidence excerpts are kept.
+- A handover can be scoped to one contributor and their selected responsibilities. The scope is a lens
+  over the same evidence, not a filter that hides unresolved risks, and approvals still apply to the
+  whole project.
 - Live import needs network access to `api.github.com`. Without `GITHUB_TOKEN` it is limited to 60
   requests an hour, so PR files and reviews are fetched for the ten most recent PRs.
 - Extraction is heuristic and precision-oriented; expect recall misses on unusual phrasing. That is

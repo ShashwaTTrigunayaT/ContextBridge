@@ -8,6 +8,7 @@
 import { all, get, json, now, parseJson, run, uid } from './db.js';
 import { componentIndex, detectGaps, SEVERITY_RANK } from './gaps.js';
 import { componentFromPath } from './ingest.js';
+import { extractionEnabled, extractClaimsWithModel, llmModel } from './llm.js';
 
 export const CLAIM_CATEGORIES = {
   decision: 'Technical decision',
@@ -215,6 +216,32 @@ function actionTextFor(gap) {
     default:
       return null;
   }
+}
+
+// Gaps are a derived view of the current claims, records and relationships, so
+// rebuilding them is always safe: nothing references a gap's identity.
+export function persistGaps(projectId, gaps) {
+  run('DELETE FROM gaps WHERE project_id = ?', projectId);
+  const gapRows = [];
+  for (const gap of gaps) {
+    const id = uid('gap');
+    run(
+      `INSERT INTO gaps (id, project_id, kind, severity, title, detail, claim_id, record_id, restricted, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+      id,
+      projectId,
+      gap.kind,
+      gap.severity,
+      gap.title,
+      gap.detail ?? null,
+      gap.claim_id ?? null,
+      gap.record_id ?? null,
+      gap.restricted ?? 0,
+      now(),
+    );
+    gapRows.push({ id, ...gap });
+  }
+  return gapRows;
 }
 
 export function reconstruct(projectId, { transitionUserId } = {}) {
@@ -493,26 +520,7 @@ export function reconstruct(projectId, { transitionUserId } = {}) {
     });
   }
 
-  // Persist gaps.
-  const gapRows = [];
-  for (const gap of gaps) {
-    const id = uid('gap');
-    run(
-      `INSERT INTO gaps (id, project_id, kind, severity, title, detail, claim_id, record_id, restricted, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
-      id,
-      projectId,
-      gap.kind,
-      gap.severity,
-      gap.title,
-      gap.detail ?? null,
-      gap.claim_id ?? null,
-      gap.record_id ?? null,
-      gap.restricted ?? 0,
-      now(),
-    );
-    gapRows.push({ id, ...gap });
-  }
+  const gapRows = persistGaps(projectId, gaps);
 
   // Entities and relationships.
   for (const component of components) {
@@ -620,4 +628,123 @@ export function claimEvidence(claimId, { includeRestricted }) {
       location: row.location,
       excerpt: row.excerpt,
     }));
+}
+
+const MODEL_INTEREST = /\b(why|because|decided|decision|chose|trade-?off|rationale|assum\w*|depends? on|dependency|blocked|tbd|unclear|ambiguous|legacy|temporary)\b/i;
+
+// Model-assisted extraction runs after the deterministic pass and only adds
+// claims. Each proposed claim is kept only when it names a record we sent, uses a
+// known category, is not a duplicate, and has an excerpt behind it. The added
+// claims are still pending, so a human reviewer decides whether they are true.
+export async function augmentWithModel(projectId) {
+  if (!extractionEnabled()) return { enabled: false, added: 0, considered: 0 };
+  const project = get('SELECT * FROM projects WHERE id = ?', projectId);
+  if (!project) return { enabled: false, added: 0, considered: 0 };
+
+  const existing = all('SELECT record_id, text FROM claims WHERE project_id = ?', projectId);
+  const claimedRecords = new Set(existing.map((claim) => claim.record_id).filter(Boolean));
+  const keys = new Set(existing.map((claim) => normalize(claim.text).slice(0, 100)));
+
+  const records = all('SELECT * FROM source_records WHERE project_id = ? ORDER BY occurred_at DESC', projectId);
+  const considered = records
+    .filter((record) => {
+      const haystack = `${record.title ?? ''} ${record.body ?? ''}`;
+      return haystack.trim().length >= 80 && (MODEL_INTEREST.test(haystack) || !claimedRecords.has(record.id));
+    })
+    .slice(0, 32);
+
+  if (!considered.length) return { enabled: true, model: llmModel(), added: 0, considered: 0 };
+
+  const proposed = await extractClaimsWithModel({
+    projectName: project.name,
+    records: considered.map((record) => ({
+      id: record.id,
+      type: record.type,
+      state: record.state,
+      title: record.title,
+      body: shorten(record.body ?? '', 900),
+    })),
+  });
+
+  const recordById = new Map(records.map((record) => [record.id, record]));
+  const transitionId = project.transition_user_id ?? null;
+  let added = 0;
+
+  for (const item of proposed) {
+    const record = recordById.get(String(item?.recordId ?? ''));
+    if (!record) continue;
+    const category = String(item?.category ?? '').trim();
+    if (!CLAIM_CATEGORIES[category] || category === 'next_action') continue;
+    const text = shorten(String(item?.text ?? '').replace(/\s+/g, ' ').trim(), 340);
+    if (text.length < 20) continue;
+    const key = normalize(text).slice(0, 100);
+    if (keys.has(key)) continue;
+
+    // Evidence is the record's own text, so a reviewer can always see why the
+    // claim exists. A claim with no readable excerpt is not added.
+    const chunks = all('SELECT * FROM chunks WHERE record_id = ? ORDER BY ordinal LIMIT 2', record.id);
+    if (!chunks.length) continue;
+
+    const meta = parseJson(record.metadata);
+    let component = null;
+    for (const file of meta.files ?? []) {
+      component = componentFromPath(file);
+      if (component) break;
+    }
+
+    keys.add(key);
+    const claimId = uid('clm');
+    const strength = strengthFor(1, chunks.length);
+    run(
+      `INSERT INTO claims
+         (id, project_id, transition_user_id, record_id, category, text, component, status, evidence_strength, signal, claim_key, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, 'llm:extraction', ?, ?)`,
+      claimId,
+      projectId,
+      transitionId,
+      record.id,
+      category,
+      text,
+      component,
+      strength,
+      `llm:${key}`,
+      now(),
+    );
+    for (const chunk of chunks) {
+      run(
+        'INSERT INTO evidence (id, claim_id, record_id, source_id, location, excerpt, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        uid('evd'),
+        claimId,
+        record.id,
+        record.source_id,
+        `${recordLabel(record)} · excerpt ${chunk.ordinal + 1}`,
+        shorten(chunk.text, 320),
+        now(),
+      );
+    }
+    added += 1;
+  }
+
+  // New claims can introduce or resolve gaps, so the derived gap set is rebuilt.
+  let gaps = 0;
+  if (added > 0) {
+    const freshClaims = all('SELECT * FROM claims WHERE project_id = ?', projectId).map((claim) => ({
+      ...claim,
+      evidence: all('SELECT source_id AS sourceId FROM evidence WHERE claim_id = ?', claim.id),
+    }));
+    const freshRecords = all('SELECT * FROM source_records WHERE project_id = ?', projectId);
+    const sources = all('SELECT * FROM sources WHERE project_id = ?', projectId);
+    const transitionUser = transitionId ? get('SELECT * FROM users WHERE id = ?', transitionId) : null;
+    const detected = detectGaps({
+      project,
+      records: freshRecords,
+      sources,
+      claims: freshClaims,
+      components: componentIndex(freshRecords),
+      transitionUser,
+    });
+    gaps = persistGaps(projectId, detected).length;
+  }
+
+  return { enabled: true, model: llmModel(), considered: considered.length, added, gaps };
 }

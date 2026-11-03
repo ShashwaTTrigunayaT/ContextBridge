@@ -26,6 +26,10 @@ services:
       # Public deployments should not print demo passwords on the sign-in page.
       - key: EXPOSE_INSTALL_ACCOUNTS
         value: "false"
+      # Lets the Workspaces page switch between the five demo roles. It only
+      # issues sessions for install accounts; set to "false" on a real deployment.
+      - key: DEMO_ACCOUNT_SWITCHING
+        value: "true"
       # Generated once by Render and kept secret; required to sign in.
       - key: INSTALL_PASSWORD
         generateValue: true

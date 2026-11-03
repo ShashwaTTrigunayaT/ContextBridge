@@ -59,6 +59,7 @@ export default function Login() {
               required
             />
           </Field>
+
           {error && <p className="form-error">{error}</p>}
           <Btn variant="primary" type="submit" disabled={busy}>
             {busy ? 'Signing in…' : 'Sign in'}

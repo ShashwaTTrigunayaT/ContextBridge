@@ -291,7 +291,7 @@ export default function Claims() {
                       Verify
                     </Btn>
                     {canAssist && (
-                      <Btn variant="ghost" size="sm" icon="sparkles" onClick={checkWithModel} disabled={assisting}>
+                      <Btn variant="ghost" size="sm" icon="badgeCheck" onClick={checkWithModel} disabled={assisting}>
                         {assisting ? 'Checking…' : 'Check with model'}
                       </Btn>
                     )}

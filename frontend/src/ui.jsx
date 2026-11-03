@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, ArrowRight, ArrowRightLeft, BadgeCheck, Bell, Check, ChevronDown, ChevronRight, Clock, Database, ExternalLink, Eye, FileText, GitBranch, Inbox, Laptop, LayoutGrid, ListChecks, Lock, LogOut, Play, Plus, RefreshCw, Search, Send, Settings, Shield, Sparkles, UserRoundPlus, X } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, ArrowRightLeft, BadgeCheck, Bell, Check, ChevronDown, ChevronRight, Clock, Database, ExternalLink, Eye, FileText, GitBranch, Inbox, Laptop, LayoutGrid, ListChecks, Lock, LogOut, Play, Plus, RefreshCw, Search, Send, Settings, Shield, UserRoundPlus, X } from 'lucide-react';
 
 
 export const cx = (...parts) => parts.filter(Boolean).join(' ');
@@ -18,7 +18,7 @@ const ICONS = {
   refresh: RefreshCw,
   plus: Plus,
   lock: Lock,
-  sparkles: Sparkles,
+  badgeCheck: BadgeCheck,
   send: Send,
   logout: LogOut,
   external: ExternalLink,

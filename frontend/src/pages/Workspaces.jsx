@@ -8,7 +8,7 @@ import NewProjectModal from '../components/NewProjectModal.jsx';
 // The hub a signed-in member lands on: every workspace they belong to as a card,
 // plus the way to create another one.
 export default function Workspaces() {
-  const { projects, projectId, selectProject, go, user, accounts, login, notify } = useApp();
+  const { projects, projectId, selectProject, go, user, accounts, switchAccount, notify } = useApp();
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -16,11 +16,13 @@ export default function Workspaces() {
 
   // The installation ships one account per role so a reviewer can check what an
   // administrator and an incoming member actually see. Switching happens here,
-  // after a workspace exists, not on the sign-in screen.
-  async function switchAccount(account) {
+  // after a workspace exists, not on the sign-in screen. The server issues a new
+  // session for an install account, so it does not depend on a visible password.
+  async function switchRole(account) {
     setSwitching(account.email);
     try {
-      await login(account.email, account.password);
+      await switchAccount(account.email);
+      notify?.(`Now signed in as ${account.name}.`, 'success');
     } catch (error) {
       notify?.(error.message, 'error');
     } finally {
@@ -208,7 +210,7 @@ export default function Workspaces() {
                     size="sm"
                     variant={current ? 'ghost' : 'secondary'}
                     disabled={current || switching === account.email}
-                    onClick={() => switchAccount(account)}
+                    onClick={() => switchRole(account)}
                   >
                     {current ? 'Signed in' : switching === account.email ? 'Switching…' : 'Switch'}
                   </Btn>

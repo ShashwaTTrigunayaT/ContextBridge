@@ -28,7 +28,7 @@ import {
   ensureHandover,
 } from './handover.js';
 import { answerQuestion, auditTrail } from './assistant.js';
-import { ensureInstall, installAccountList } from './install.js';
+import { ensureInstall, INSTALL_ACCOUNTS, installAccountList } from './install.js';
 import { isRepoSlug } from './repos.js';
 import { assessClaimWithModel, extractionEnabled, llmEnabled, llmModel } from './llm.js';
 import { documentFormat, extractDocumentText } from './documents.js';
@@ -178,7 +178,7 @@ export function createApp() {
   // A source review can attach a PDF, so the JSON limit covers a base64 payload
   // of the same size the document parser accepts.
   ensureInstall();
-  app.use(express.json({ limit: '16mb' }));
+  app.use(express.json({ limit: '20mb' }));
 
   app.use((req, res, next) => {
     const cookies = parseCookies(req.headers.cookie);
@@ -260,6 +260,43 @@ export function createApp() {
   // Sign-in accounts for this installation. Passwords are included only while
   // EXPOSE_INSTALL_ACCOUNTS is not "false"; set it to false outside local use.
   app.get('/api/accounts', (req, res) => res.json({ accounts: installAccountList() }));
+
+  // Demo convenience: the installation ships one account per role so the same
+  // workspace can be inspected as an administrator, reviewer, manager, incoming
+  // member and viewer. Switching is limited to those install accounts and only
+  // issues a new session — it cannot reach a self-registered user. Set
+  // DEMO_ACCOUNT_SWITCHING=false to turn it off on a real deployment.
+  app.post('/api/accounts/switch', (req, res) => {
+    if (process.env.DEMO_ACCOUNT_SWITCHING === 'false') {
+      return res.status(403).json({ error: 'Account switching is disabled on this deployment.' });
+    }
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const user = get('SELECT * FROM users WHERE email = ?', email);
+    if (!user) return res.status(404).json({ error: 'No account with that email exists in this database.' });
+
+    // The target must be an installation account or someone who shares a project
+    // with the caller. An unrelated account is never reachable through switching.
+    const installRole = INSTALL_ACCOUNTS.find((entry) => entry.email === user.email)?.role ?? null;
+    const shared = get(
+      `SELECT 1 FROM memberships a
+         JOIN memberships b ON b.project_id = a.project_id
+        WHERE a.user_id = ? AND b.user_id = ?
+        LIMIT 1`,
+      req.user.id,
+      user.id,
+    );
+    if (!installRole && !shared) {
+      return res.status(400).json({ error: 'Only accounts in this workspace can be switched from here.' });
+    }
+
+    // End the current session before issuing the new one, so a switch is a real
+    // handover of identity rather than two valid sessions in one browser.
+    destroySession(req.sessionId);
+    const session = createSession(user.id);
+    res.cookie('cb_session', session.id, { httpOnly: true, sameSite: 'lax', maxAge: 7 * 864e5, path: '/' });
+    audit(null, req.user.id, 'account.switch', user.email, installRole ? `role ${installRole}` : 'workspace member');
+    return res.json({ user: { id: user.id, name: user.name, email: user.email, title: user.title } });
+  });
 
   app.post('/api/login', (req, res) => {
     const email = String(req.body?.email ?? '').trim().toLowerCase();

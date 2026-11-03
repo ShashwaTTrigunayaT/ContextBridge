@@ -168,22 +168,26 @@ incoming member actually see. `/api/accounts` exposes the list (with passwords) 
 
 ## What to try
 
-1. Sign in as **Reviewer** and open **Evidence**: a claim shows the exact excerpt, the record it came
+1. Open **Workspaces** and use **Role access** to switch between the five installation accounts — the
+   same workspace opens with that role's permissions, so no second browser or retyped password is
+   needed. Switching only issues a session for an install account; disable it with
+   `DEMO_ACCOUNT_SWITCHING=false`.
+2. Sign in as **Reviewer** and open **Evidence**: a claim shows the exact excerpt, the record it came
    from and which source it belongs to. Strength is counted from records; verification is your call.
    With a Groq key configured, **Check with model** adds an advisory read of the same excerpts.
-2. Open **Risks**: unassigned issues, PRs with no review, components only the departing engineer
+3. Open **Risks**: unassigned issues, PRs with no review, components only the departing engineer
    touched, unresolved questions and conflicting records.
-3. **Verify** a decision, **Correct** a risk claim, then **Reject** a draft PR — a reason is required.
-4. Open **Sources** and upload a PDF, DOCX or note, or connect a GitHub repository. A connected GitHub
+4. **Verify** a decision, **Correct** a risk claim, then **Reject** a draft PR — a reason is required.
+5. Open **Sources** and upload a PDF, DOCX or note, or connect a GitHub repository. A connected GitHub
    account lists your private repositories; a re-sync updates an existing source in place.
-5. Sign in as **Manager** and open **Departure**: choose the engineer who is leaving, tick the
+6. Switch to **Manager** and open **Departure**: choose the engineer who is leaving, tick the
    responsibilities that move with them, and save. The handover draft opens with that scope.
-6. Open **Handover**, read the draft, then **Approve**. Restricted material is excluded from the shared
+7. Open **Handover**, read the draft, then **Approve**. Restricted material is excluded from the shared
    copy and the version is frozen.
-7. Switch to **Incoming member**: the draft is gone, only the approved version is visible, and
+8. Switch to **Incoming member**: the draft is gone, only the approved version is visible, and
    **Acknowledge handover** completes the workflow. Any note or question is recorded for the departing
    member. Ask *"What should I work on first?"* for a cited answer.
-8. Switch to **Administrator** and open **Activity**: approvals, acknowledgements, corrections,
+9. Switch to **Administrator** and open **Activity**: approvals, acknowledgements, corrections,
    rejections and denied restricted-record access are all recorded.
 
 ---
@@ -343,6 +347,7 @@ All three are covered by mocked-transport tests; no live key is required to run 
 | `GITHUB_OAUTH_REDIRECT` | Override the callback URL when the host differs from the origin |
 | `INSTALL_PASSWORD` | Password for the five install accounts |
 | `EXPOSE_INSTALL_ACCOUNTS` | Set to `false` to hide install accounts and passwords from `/api/accounts` |
+| `DEMO_ACCOUNT_SWITCHING` | Set to `false` to disable the Workspaces role switcher |
 | `GITHUB_TOKEN` | Raises the GitHub rate limit and enables private repositories |
 | `PORT` | API / app port (default `3000`) |
 | `CONTEXTBRIDGE_DB` | SQLite file path (default `data/contextbridge.db`) |
@@ -403,7 +408,15 @@ directory — never the workspace database, and the product ships no synthetic d
   re-reconstruction;
 - the incoming member's snapshot contains no restricted evidence or clause text;
 - the assistant answers grounded questions and refuses unsupported ones;
-- the audit log records approvals, rejections and denied access.
+- the audit log records approvals, rejections and denied access;
+- PDF, DOCX, Markdown and text extract correctly, and unsupported or empty uploads are rejected;
+- a departure scope stores the contributor and selected responsibilities, appears in the draft
+  handover, and is refused to roles without project management;
+- acknowledgement is refused before approval, recorded once, updated idempotently, and refused to the
+  departing member;
+- GitHub status is reported honestly, an unconfigured OAuth flow explains itself, and repository
+  listing is guarded;
+- only repository sources can be re-synced.
 
 The Groq adapter is covered separately with a mocked transport, so no API key or network is required.
 
@@ -419,27 +432,35 @@ The Groq adapter is covered separately with a mocked transport, so no API key or
 | `GET /api/projects/:id` | Summary, counts, sources, components, members |
 | `GET /api/projects/:id/sources` | Authorized sources and their state |
 | `POST /api/projects/:id/sources/github` | Import a live GitHub repository |
-| `POST /api/projects/:id/sources/documents` | Upload a document with visibility |
+| `POST /api/projects/:id/sources/:sourceId/sync` | Re-read a connected repository in place |
+| `POST /api/projects/:id/sources/documents` | Upload a PDF, DOCX, Markdown or text document |
 | `DELETE /api/projects/:id/sources/:sourceId` | Disconnect and remove a source |
-| `POST /api/projects/:id/reconstruct` | Rebuild claims, evidence, gaps and next actions |
+| `POST /api/projects/:id/reconstruct` | Rebuild claims, evidence, gaps and next actions (plus the optional model pass) |
+| `GET /api/projects/:id/transition` | Departure options: members, contributors and responsibilities |
+| `POST /api/projects/:id/transition` | Save the departing contributor and the responsibilities they transfer |
 | `GET /api/projects/:id/claims` | Claims with filtered evidence |
 | `GET /api/projects/:id/claims/:claimId` | One claim with its evidence |
 | `POST /api/projects/:id/claims/:claimId/review` | `verify` / `reject` / `edit` |
+| `POST /api/projects/:id/claims/:claimId/assist` | Advisory model read of the same evidence |
 | `GET /api/projects/:id/gaps` | Detected gaps and risks |
 | `GET /api/projects/:id/relationships` | Graph edges for the knowledge explorer |
 | `GET /api/projects/:id/handover` | Draft (privileged) or approved snapshot |
 | `POST /api/projects/:id/handover/approve` | Freeze and release a version |
+| `POST /api/projects/:id/handover/acknowledge` | Incoming member confirms receipt of an approved version |
 | `GET /api/projects/:id/handover/versions` | Approval history |
 | `GET /api/projects/:id/records/:recordId` | Inspect a source record (permission-checked) |
 | `POST /api/projects/:id/assistant` | Ask a question grounded in the approved handover |
 | `GET /api/projects/:id/audit` | Audit trail (administrators and reviewers) |
+| `GET /api/github/status` | Whether OAuth is configured and who is connected |
+| `GET /api/github/oauth/start`, `/api/github/oauth/callback` | GitHub OAuth connection |
+| `GET /api/github/repos` | Repositories the connected account can read |
+| `POST /api/github/disconnect` | Forget the stored GitHub token |
 
 ## Roadmap
 
 1. **Second connector** — Jira or Slack ingestion to prove multi-source reconstruction beyond GitHub.
 2. **Retrieval quality** — embeddings + pgvector, with precision and recall measured on a labelled
    claim set.
-3. **Role-aware views** — manager and tech-lead views of the same approved snapshot under the same
-   source-level enforcement.
-4. Then: departure detection, continuous knowledge monitoring and knowledge-concentration risk scoring
-   across projects.
+3. **Retained originals** — store the uploaded PDF or DOCX alongside its extracted text so a reviewer
+   can open the original page.
+4. Then: continuous knowledge monitoring and knowledge-concentration risk scoring across projects.

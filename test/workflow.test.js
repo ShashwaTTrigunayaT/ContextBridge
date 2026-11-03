@@ -314,6 +314,24 @@ test('GitHub connection is reported and guarded until configured', async () => {
   assert.equal(start.status, 400, 'an unconfigured deployment explains how to fix it');
 });
 
+test('demo role switching issues a new session for install accounts only', async () => {
+  const viewer = await login(FIXTURE_ACCOUNTS.incoming.email);
+  const switched = await call(viewer, 'POST', '/accounts/switch', { email: FIXTURE_ACCOUNTS.admin.email });
+  assert.equal(switched.status, 200);
+  assert.equal(switched.data.user.email, FIXTURE_ACCOUNTS.admin.email);
+
+  // The previous session was ended as part of the switch.
+  const oldSession = await call(viewer, 'GET', '/me');
+  assert.equal(oldSession.status, 401);
+
+  const stranger = await call(viewer, 'POST', '/accounts/switch', { email: 'someone@else.test' });
+  assert.equal(stranger.status, 401, 'the old session cannot switch again');
+
+  const fresh = await login(FIXTURE_ACCOUNTS.incoming.email);
+  const unknown = await call(fresh, 'POST', '/accounts/switch', { email: 'someone@else.test' });
+  assert.equal(unknown.status, 404, 'an unknown account cannot be switched to');
+});
+
 test('only repository sources can be re-synced', async () => {
   const summary = await call(admin, 'GET', `/projects/${project}`);
   const document = summary.data.sources.find((source) => source.kind === 'document');

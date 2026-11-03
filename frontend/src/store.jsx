@@ -101,6 +101,16 @@ export function AppProvider({ children }) {
     [bootstrap],
   );
 
+  // Demo role switching: the server opens a session for an installation account,
+  // so it does not rely on a password the account list may hide.
+  const switchAccount = useCallback(
+    async (email) => {
+      await api('/accounts/switch', { method: 'POST', body: { email } });
+      await bootstrap();
+    },
+    [bootstrap],
+  );
+
   const logout = useCallback(async () => {
     await api('/logout', { method: 'POST' }).catch(() => {});
     setUser(null);
@@ -162,6 +172,7 @@ export function AppProvider({ children }) {
       notify,
       dismissToast,
       login,
+      switchAccount,
       logout,
       selectProject,
       refresh,
@@ -184,6 +195,7 @@ export function AppProvider({ children }) {
       notify,
       dismissToast,
       login,
+      switchAccount,
       logout,
       selectProject,
       refresh,

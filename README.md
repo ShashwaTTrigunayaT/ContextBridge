@@ -135,6 +135,15 @@ docker build -t contextbridge .
 docker run -p 3000:3000 -v contextbridge-data:/app/data contextbridge
 ```
 
+### The seeded snapshot
+
+The image ships `seed/contextbridge.db` — a snapshot of the `twentyhq/twenty` workspace: 103 records,
+161 claims, 500 evidence rows, 17 gaps and an approved handover at version 1. `docker-entrypoint.sh`
+copies it into the data directory on first boot, so a host without a disk (Render's free plan) opens a
+real project instead of an empty workspace. Writes made after boot are still lost on the next restart,
+which is why a disk is the recommended setup. No password hash from a developer machine is shipped:
+every account in the snapshot is re-hashed to `INSTALL_PASSWORD`.
+
 ---
 
 ## Accounts and roles

@@ -18,14 +18,18 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY server.js ./
+COPY server.js docker-entrypoint.sh ./
 COPY src ./src
 COPY --from=build /app/dist ./dist
 
+# A snapshot of a real workspace (twentyhq/twenty) so a host without a disk
+# still shows a usable project on every boot. See docker-entrypoint.sh.
+COPY seed ./seed
+
 # Default SQLite location inside the image. Override CONTEXTBRIDGE_DB to point at
 # a mounted volume so handovers survive restarts and redeploys.
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chmod +x /app/docker-entrypoint.sh
 VOLUME ["/app/data"]
 
 EXPOSE 3000
-CMD ["node", "server.js"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

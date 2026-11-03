@@ -6,8 +6,8 @@ import { LogoMark } from '../components/Logo.jsx';
 
 export default function Login() {
   const { login } = useApp();
-  const [email, setEmail] = useState('reviewer@contextbridge.local');
-  const [password, setPassword] = useState('contextbridge');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -46,6 +46,7 @@ export default function Login() {
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               autoComplete="username"
+              placeholder="you@company.com"
               required
             />
           </Field>

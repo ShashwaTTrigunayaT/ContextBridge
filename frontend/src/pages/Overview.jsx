@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, CircleAlert, CircleCheck, Play, Users } from 'lucide-react';
 import { api } from '../api.js';
 import { useApp } from '../store.jsx';
@@ -15,6 +15,7 @@ export default function Overview() {
   const [busy, setBusy] = useState(false);
   const claimsQuery = useAsync(() => api(`/projects/${projectId}/claims`), [projectId]);
   const gapsQuery = useAsync(() => api(`/projects/${projectId}/gaps`), [projectId]);
+  const briefingQuery = useAsync(() => api(`/projects/${projectId}/briefing`), [projectId]);
 
   const claims = claimsQuery.data?.claims ?? [];
   const categoryChart = useMemo(() => {
@@ -33,6 +34,7 @@ export default function Overview() {
   // the loading render and the loaded render.
   if (!summary) return <Loading rows={4} />;
 
+  const briefing = briefingQuery.data;
   const counts = summary.counts;
   const approved = summary.handover?.approvedVersion;
   const transition = summary.transitionUser;
@@ -114,6 +116,45 @@ export default function Overview() {
             Incoming
           </Btn>
         </div>
+      </section>
+
+      <section className="ws-block ws-briefing">
+        <header className="ws-briefing-head">
+          <div>
+            <span className="ws-briefing-eyebrow">
+              AI briefing
+              <span className="ws-briefing-source">
+                {briefing?.source === 'model' ? `Groq · ${briefing.model}` : briefing ? 'Deterministic' : 'Generating'}
+                {briefing ? ` · ${briefing.counts?.claims ?? 0} claims · ${briefing.counts?.records ?? 0} records` : ''}
+              </span>
+            </span>
+            <h2 className="ws-briefing-title">What this workspace holds</h2>
+          </div>
+          <Btn
+            variant="ghost"
+            size="sm"
+            icon="refresh"
+            onClick={() => briefingQuery.reload?.()}
+            disabled={briefingQuery.loading}
+          >
+            {briefingQuery.loading ? 'Summarising…' : 'Refresh'}
+          </Btn>
+        </header>
+
+        {briefing ? (
+          <div className="ws-briefing-body">
+            {briefing.lines?.length ? (
+              <TypedBriefingLines lines={briefing.lines} />
+            ) : (
+              <p className="ws-briefing-text">{briefing.summary}</p>
+            )}
+            <NavFlow />
+          </div>
+        ) : briefingQuery.error ? (
+          <p className="ws-briefing-note">{briefingQuery.error.message}</p>
+        ) : (
+          <p className="ws-briefing-note">Reading the evidence and writing the briefing…</p>
+        )}
       </section>
 
       <div className="ws-kpis">
@@ -538,6 +579,128 @@ export default function Overview() {
         </p>
       )}
     </div>
+  );
+}
+
+// The workspace flow, small and clickable: it hints at the navigation without
+// writing tab names into the briefing points.
+const FLOW_STEPS = [
+  { view: 'sources', label: 'Sources', hint: 'Repos and documents' },
+  { view: 'departure', label: 'Departure', hint: 'Who leaves, what moves' },
+  { view: 'claims', label: 'Evidence', hint: 'Claims vs excerpts' },
+  { view: 'gaps', label: 'Risks', hint: 'Gaps and conflicts' },
+  { view: 'handover', label: 'Handover', hint: 'Draft, then approve' },
+  { view: 'workspace', label: 'Incoming', hint: 'What the owner receives' },
+];
+
+// The rail runs as a snake: right along the top, down, left along the middle,
+// down, then right again — so six steps fit without a tall column.
+const FLOW_DIRS = ['right', 'down', 'left', 'down', 'right', 'none'];
+
+function NavFlow() {
+  const { go } = useApp();
+  return (
+    <div className="ws-flow" aria-label="How this workspace is used">
+      <span className="ws-flow-label">Workspace flow</span>
+      <ol className="ws-flow-chain">
+        {FLOW_STEPS.map((step, index) => (
+          <li className={`ws-flow-node dir-${FLOW_DIRS[index] ?? 'none'}`} key={step.view}>
+            <button
+              type="button"
+              className="ws-flow-box"
+              data-hint={step.hint}
+              title={`${step.label} — ${step.hint}`}
+              onClick={() => go(step.view)}
+            >
+              {step.label}
+            </button>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+// The points write themselves in, so the card reads as a live answer rather
+// than a block of text that appeared at once. Reduced motion shows them whole.
+function TypedBriefingLines({ lines }) {
+  const [reduced] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
+  );
+  const [lineIndex, setLineIndex] = useState(0);
+  const [charIndex, setCharIndex] = useState(0);
+
+  useEffect(() => {
+    setLineIndex(0);
+    setCharIndex(0);
+  }, [lines]);
+
+  useEffect(() => {
+    if (reduced) {
+      setLineIndex(lines.length);
+      return undefined;
+    }
+    if (lineIndex >= lines.length) return undefined;
+    const current = lines[lineIndex] ?? '';
+    if (charIndex < current.length) {
+      const id = setTimeout(() => setCharIndex((value) => Math.min(current.length, value + 2)), 10);
+      return () => clearTimeout(id);
+    }
+    const id = setTimeout(() => {
+      setLineIndex((value) => value + 1);
+      setCharIndex(0);
+    }, 150);
+    return () => clearTimeout(id);
+  }, [lineIndex, charIndex, lines, reduced]);
+
+  const visibleLines = lines.slice(0, Math.min(lines.length, lineIndex + 1));
+
+  return (
+    <ul className="ws-briefing-lines">
+      {visibleLines.map((line, index) => {
+        const typing = !reduced && index === lineIndex;
+        const text = index < lineIndex ? line : line.slice(0, charIndex);
+        return (
+          <li key={`${index}-${line.slice(0, 16)}`} className={typing ? 'is-typing' : undefined}>
+            <span className="ws-briefing-index" aria-hidden="true">
+              {String(index + 1).padStart(2, '0')}
+            </span>
+            <span className="ws-briefing-body-text">
+              <BriefingLine text={text} />
+              {typing && <span className="ws-caret" aria-hidden="true" />}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// Key words carry the emphasis: the label before a colon, and any numbers or
+// issue references, drawn in the workspace teal.
+function BriefingLine({ text }) {
+  const match = /^([^:]{2,40}):\s*(.*)$/.exec(text);
+  const key = match?.[1] ?? null;
+  const rest = match?.[2] ?? text;
+  const parts = rest.split(/(#\d+|\b\d+(?:[.,]\d+)?%?\b)/g);
+  return (
+    <>
+      {key && (
+        <>
+          <span className="ws-briefing-key">{key}</span>
+          <span className="ws-briefing-colon">: </span>
+        </>
+      )}
+      {parts.map((part, index) =>
+        /^(#\d+|\d+(?:[.,]\d+)?%?)$/.test(part) ? (
+          <span className="ws-briefing-num" key={index}>
+            {part}
+          </span>
+        ) : (
+          part
+        ),
+      )}
+    </>
   );
 }
 

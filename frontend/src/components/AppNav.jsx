@@ -24,16 +24,16 @@ import NewProjectModal from './NewProjectModal.jsx';
 // role cannot use opens the page-level "not available" notice instead of
 // disappearing from the bar, so the navigation never changes shape.
 const ITEMS = [
-  { view: 'workspaces', label: 'Workspaces', Icon: LayoutGrid },
-  { view: 'overview', label: 'Dashboard', Icon: LayoutGrid },
-  { view: 'departure', label: 'Departure', Icon: ArrowRightLeft },
-  { view: 'sources', label: 'Sources', Icon: Database },
-  { view: 'activity', label: 'Activity', Icon: Activity },
-  { view: 'knowledge', label: 'Knowledge', Icon: Network },
-  { view: 'claims', label: 'Evidence', Icon: ListChecks },
-  { view: 'gaps', label: 'Risks', Icon: AlertTriangle },
-  { view: 'handover', label: 'Handover', Icon: FileText },
-  { view: 'workspace', label: 'Incoming', Icon: Laptop },
+  { view: 'workspaces', label: 'Workspaces', Icon: LayoutGrid, hint: 'Every handover you can open' },
+  { view: 'overview', label: 'Dashboard', Icon: LayoutGrid, hint: 'Project state, sources and handover readiness' },
+  { view: 'departure', label: 'Departure', Icon: ArrowRightLeft, hint: 'Who is leaving and which responsibilities move with them' },
+  { view: 'sources', label: 'Sources', Icon: Database, hint: 'Repositories and documents this handover may use' },
+  { view: 'activity', label: 'Activity', Icon: Activity, hint: 'Imports, reviews, approvals and denied access' },
+  { view: 'knowledge', label: 'Knowledge', Icon: Network, hint: 'Components, contributors and the sources behind them' },
+  { view: 'claims', label: 'Evidence', Icon: ListChecks, hint: 'Every claim with the excerpts that support it' },
+  { view: 'gaps', label: 'Risks', Icon: AlertTriangle, hint: 'Ownership gaps, stale work, conflicts and open questions' },
+  { view: 'handover', label: 'Handover', Icon: FileText, hint: 'The reviewable document, versioned and approved' },
+  { view: 'workspace', label: 'Incoming', Icon: Laptop, hint: 'What the incoming member receives, plus the assistant' },
 ];
 
 export default function AppNav() {
@@ -72,6 +72,7 @@ export default function AppNav() {
                 type="button"
                 className={cx('app-link', route === item.view && 'is-active')}
                 onClick={() => go(item.view)}
+                title={`${item.label} — ${item.hint}`}
                 aria-current={route === item.view ? 'page' : undefined}
               >
                 <item.Icon size={13} strokeWidth={1.8} />

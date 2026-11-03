@@ -27,7 +27,7 @@ import {
   buildHandover,
   ensureHandover,
 } from './handover.js';
-import { answerQuestion, auditTrail } from './assistant.js';
+import { answerQuestion, auditTrail, workspaceBriefing } from './assistant.js';
 import { ensureInstall, INSTALL_ACCOUNTS, installAccountList } from './install.js';
 import { isRepoSlug } from './repos.js';
 import { assessClaimWithModel, extractionEnabled, llmEnabled, llmModel } from './llm.js';
@@ -213,7 +213,14 @@ export function createApp() {
     return { project, role };
   }
 
-  app.get('/api/health', (req, res) => res.json({ ok: true, service: 'contextbridge' }));
+  app.get('/api/health', (req, res) =>
+    res.json({
+      ok: true,
+      service: 'contextbridge',
+      // Public and secret-free: lets you confirm a host picked up GROQ_API_KEY.
+      assistant: { llmEnabled: llmEnabled(), model: llmEnabled() ? llmModel() : 'deterministic-retrieval' },
+    }),
+  );
 
   // Aggregate figures for the public pages: counts only. No claim text, record
   // body or excerpt is exposed, and nothing here identifies a person beyond a
@@ -999,6 +1006,18 @@ export function createApp() {
     const result = await answerQuestion({ projectId: context.project.id, question });
     audit(context.project.id, req.user.id, 'assistant.ask', null, question.slice(0, 160));
     res.json(result);
+  });
+
+  // One paragraph on what this workspace contains, written for the person who
+  // just opened it. The model only phrases facts buildHandover already proved.
+  app.get('/api/projects/:projectId/briefing', async (req, res) => {
+    const context = projectContext(req, res, 'handover:read-draft');
+    if (!context) return;
+    try {
+      res.json(await workspaceBriefing({ projectId: context.project.id, role: context.role }));
+    } catch (error) {
+      res.status(502).json({ error: `Could not summarise this workspace: ${error.message}` });
+    }
   });
 
   app.get('/api/projects/:projectId/audit', (req, res) => {

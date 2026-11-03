@@ -25,7 +25,7 @@ export const MODEL_CLAIM_CATEGORIES = [
 const ASSESSMENT_VERDICTS = new Set(['supported', 'weak', 'conflicting', 'unsupported']);
 
 export function llmEnabled() {
-  return Boolean(process.env.GROQ_API_KEY);
+  return Boolean(process.env.GROQ_API_KEY?.trim());
 }
 
 export function llmModel() {
@@ -40,18 +40,22 @@ export function extractionEnabled() {
 
 async function chat({ messages, maxTokens = 400, temperature = 0.2, jsonMode = false, timeout = 15000 }) {
   if (!llmEnabled()) return null;
+  const model = llmModel();
   try {
     const response = await fetch(ENDPOINT, {
       method: 'POST',
       signal: AbortSignal.timeout(timeout),
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        Authorization: `Bearer ${process.env.GROQ_API_KEY.trim()}`,
       },
       body: JSON.stringify({
-        model: llmModel(),
+        model,
         temperature,
         max_tokens: maxTokens,
+        // gpt-oss spends most of its budget on hidden reasoning; low effort keeps
+        // room for the answer itself instead of returning empty content.
+        ...(String(model).includes('gpt-oss') ? { reasoning_effort: 'low' } : {}),
         ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
         messages,
       }),
@@ -98,6 +102,41 @@ function parseJsonObject(text) {
       return null;
     }
   }
+}
+
+// A handful of short lines that tell someone newly opening the workspace what it
+// holds. The caller supplies the facts; the model is never asked to invent one.
+export async function summarizeWorkspace({ projectName, facts }) {
+  if (!llmEnabled()) return null;
+  const text = await chat({
+    temperature: 0.3,
+    maxTokens: 900,
+    timeout: 25000,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You brief someone joining a project who just opened its workspace.\n' +
+          'Return 5 or 6 short lines, one idea per line, each at most 90 characters.\n' +
+          'Cover, in this order: what the project is, the main areas of work, what is unfinished, ' +
+          'the biggest risk or gap, and what to look at first.\n' +
+          'Do not mention workspace tabs or navigation; that line is added separately.\n' +
+          'Plain text only: no numbering, no bullet characters, no markdown, no blank lines, no headings.\n' +
+          'Use only the facts given and never invent a name, number or technology. Prefer concrete nouns over filler.',
+      },
+      { role: 'user', content: `Project: ${projectName}\n\nFacts:\n${facts}` },
+    ],
+  });
+  if (!text) return null;
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.replace(/^[-*•\u2022\d.)\s]+/, '').trim())
+    .filter((line) => line.length > 3)
+    // A model that dumps a whole legend into one line breaks the layout; keep
+    // only lines that fit the card and let the deterministic version fill in.
+    .filter((line) => line.length <= 120)
+    .slice(0, 6);
+  return lines.length >= 3 ? lines : null;
 }
 
 // Ask the model for claims the pattern rules miss — rationale behind a decision,

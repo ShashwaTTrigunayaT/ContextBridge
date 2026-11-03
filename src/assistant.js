@@ -3,8 +3,9 @@
 // an answer, the assistant says so instead of inventing one.
 
 import { all, get, parseJson } from './db.js';
-import { approvedSnapshot } from './handover.js';
-import { llmEnabled, phraseAnswer, llmModel } from './llm.js';
+import { approvedSnapshot, buildHandover } from './handover.js';
+import { seesRestrictedSources } from './auth.js';
+import { llmEnabled, phraseAnswer, llmModel, summarizeWorkspace } from './llm.js';
 import { shorten, significantTerms } from './extract.js';
 
 const INTENTS = [
@@ -120,6 +121,102 @@ export async function answerQuestion({ projectId, question }) {
     model: llmEnabled() ? llmModel() : 'deterministic-retrieval',
     citations,
   };
+}
+
+const BRIEFING_SECTIONS = [
+  { key: 'responsibilities', label: 'Responsibilities' },
+  { key: 'workCompleted', label: 'Work completed' },
+  { key: 'unfinishedWork', label: 'Unfinished work' },
+  { key: 'decisions', label: 'Decisions' },
+  { key: 'dependencies', label: 'Dependencies' },
+  { key: 'risks', label: 'Risks' },
+  { key: 'openQuestions', label: 'Open questions' },
+  { key: 'nextActions', label: 'Next actions' },
+];
+
+// The one-paragraph answer to "what is in this workspace?". It is built from the
+// same evidence the handover uses, with the same restricted-source rules, so it
+// can never widen what the person opening the workspace is allowed to read.
+export async function workspaceBriefing({ projectId, role }) {
+  const content = buildHandover(projectId, { viewerAllowsRestricted: seesRestrictedSources(role) });
+  const project = content.meta?.project ?? {};
+  const sections = content.sections ?? {};
+  const counts = content.overview?.counts ?? {};
+  const gaps = content.gaps ?? [];
+  const components = (content.overview?.components ?? []).map((item) => item.name).filter(Boolean);
+  const severe = gaps.filter((gap) => gap.severity === 'critical' || gap.severity === 'high').length;
+  const records = content.overview?.records ?? 0;
+
+  const facts = [];
+  facts.push(`Project: ${project.name ?? 'workspace'}`);
+  if (project.description) facts.push(`Description: ${project.description}`);
+  facts.push(
+    `Components (${components.length}): ${components.slice(0, 12).join(', ') || 'none detected'}`,
+  );
+  for (const section of BRIEFING_SECTIONS) {
+    const items = sections[section.key] ?? [];
+    if (!items.length) continue;
+    facts.push(
+      `${section.label} (${items.length}): ${items.slice(0, 4).map((item) => item.text).join(' | ')}` +
+        (items.length > 4 ? ` | and ${items.length - 4} more` : ''),
+    );
+  }
+  facts.push(`Open gaps: ${gaps.length}${severe ? ` (${severe} high severity)` : ''}`);
+  facts.push(
+    `Records: ${records}. Claims: ${counts.claims ?? 0} (${counts.pending ?? 0} awaiting review, ${counts.rejected ?? 0} rejected).`,
+  );
+
+  const generated = await summarizeWorkspace({ projectName: project.name ?? 'this workspace', facts: facts.join('\n') });
+  const lines =
+    generated ?? deterministicBriefing({ projectName: project.name ?? 'This workspace', components, sections, gaps, severe, records, counts });
+
+  return {
+    lines,
+    summary: lines.join(' '),
+    source: generated ? 'model' : 'deterministic',
+    model: generated ? llmModel() : 'deterministic-retrieval',
+    counts: {
+      claims: counts.claims ?? 0,
+      pending: counts.pending ?? 0,
+      records,
+      gaps: gaps.length,
+      severeGaps: severe,
+      components: components.length,
+    },
+    tags: BRIEFING_SECTIONS.filter((section) => (sections[section.key] ?? []).length).map((section) => ({
+      label: section.label,
+      value: sections[section.key].length,
+    })),
+  };
+}
+
+function deterministicBriefing({ projectName, components, sections, gaps, severe, records, counts }) {
+  const lines = [];
+  lines.push(
+    `${projectName} covers ${components.length || 'no'} component${components.length === 1 ? '' : 's'} across ${records} authorized records.`,
+  );
+  if (components.length) {
+    lines.push(
+      `Main areas: ${components.slice(0, 3).join(', ')}${components.length > 3 ? ` and ${components.length - 3} more` : ''}.`,
+    );
+  }
+
+  const responsibilities = (sections.responsibilities ?? []).length;
+  const decisions = (sections.decisions ?? []).length;
+  const unfinished = (sections.unfinishedWork ?? []).length;
+  if (responsibilities || decisions) {
+    lines.push(`${responsibilities} responsibilities and ${decisions} decisions are documented for the next owner.`);
+  }
+  if (unfinished) lines.push(`${unfinished} items are still open, so the incoming member starts there.`);
+
+  lines.push(
+    gaps.length
+      ? `${gaps.length} gap${gaps.length === 1 ? '' : 's'} still need attention${severe ? `, ${severe} of them high severity` : ''}.`
+      : 'No open gaps are recorded, so the evidence is internally consistent.',
+  );
+  if (counts.pending) lines.push(`${counts.pending} claims are still awaiting review.`);
+
+  return lines.slice(0, 6);
 }
 
 export function auditTrail(projectId, limit = 50) {

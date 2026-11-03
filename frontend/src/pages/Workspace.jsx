@@ -79,7 +79,7 @@ export default function Workspace() {
             Approved
           </Badge>
           <span className="hint">
-            Assistant: {summary?.assistant?.model ?? 'deterministic retrieval'}
+            Assistant: {summary?.assistant?.llmEnabled ? `Groq · ${summary.assistant.model}` : 'deterministic retrieval'}
           </span>
         </div>
       </section>

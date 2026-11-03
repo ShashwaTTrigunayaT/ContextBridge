@@ -803,7 +803,7 @@ export function createApp() {
     if (!context) return;
     if (!extractionEnabled()) {
       return res.status(503).json({
-        error: 'Model assistance is not configured on this deployment. Set GROQ_API_KEY to enable it.',
+        error: 'Model assistance is unavailable right now. You can still review and verify this claim manually.',
       });
     }
     const claim = get('SELECT * FROM claims WHERE id = ? AND project_id = ?', req.params.claimId, context.project.id);
@@ -1015,7 +1015,7 @@ export function createApp() {
     if (!oauthConfigured()) {
       return res.status(400).json({
         error:
-          'GitHub OAuth is not configured on this deployment. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET, or connect with a read-only token.',
+          'GitHub sign-in is unavailable right now. Connect a repository with a read-only token, or use a public repository.',
       });
     }
     const state = randomBytes(18).toString('hex');
@@ -1038,7 +1038,7 @@ export function createApp() {
       });
       return res.redirect('/#/sources');
     };
-    if (!oauthConfigured()) return notice('error', 'GitHub OAuth is not configured on this deployment.');
+    if (!oauthConfigured()) return notice('error', 'GitHub sign-in is unavailable right now. Try a read-only token instead.');
     if (!code || !expected || req.query.state !== expected) {
       return notice('error', 'The GitHub sign-in could not be verified. Try connecting again.');
     }

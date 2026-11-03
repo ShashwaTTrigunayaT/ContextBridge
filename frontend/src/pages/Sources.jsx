@@ -125,7 +125,7 @@ export default function Sources() {
         action={
           github ? (
             <Badge tone={github.connected ? 'success' : github.configured ? 'warning' : 'neutral'} dot>
-              {github.connected ? `@${github.login}` : github.configured ? 'Not connected' : 'OAuth not configured'}
+              {github.connected ? `@${github.login}` : github.configured ? 'Not connected' : 'Manual setup'}
             </Badge>
           ) : null
         }
@@ -156,11 +156,11 @@ export default function Sources() {
         ) : (
           <div className="github-connection">
             <div className="github-copy">
-              <strong>{github?.configured ? 'No GitHub account connected' : 'OAuth is not configured on this deployment'}</strong>
+              <strong>{github?.configured ? 'No GitHub account connected' : 'Connect a repository to start importing'}</strong>
               <p className="muted small">
                 {github?.configured
                   ? 'Connect once to list your repositories and import private repositories without pasting a token.'
-                  : 'Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to enable one-click connection. Until then, connect a repository with a read-only token or use a public repository.'}
+                  : 'One-click GitHub sign-in is unavailable right now. You can still import a public repository, or paste a read-only GitHub token when you connect a private one.'}
               </p>
             </div>
             {github?.configured && (

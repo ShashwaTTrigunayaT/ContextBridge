@@ -98,15 +98,13 @@ export default function Departure() {
     items: visible.filter((claim) => claim.category === category),
   })).filter((group) => group.items.length);
 
-  // Only a slice renders at a time: the claim list can run into the hundreds.
+  // Every category keeps its header and its own count; only the rows are paged.
   let budget = listLimit;
-  const shownGroups = [];
-  for (const group of groups) {
-    if (budget <= 0) break;
-    const items = group.items.slice(0, budget);
+  const shownGroups = groups.map((group) => {
+    const items = group.items.slice(0, Math.max(0, budget));
     budget -= items.length;
-    shownGroups.push({ ...group, items, total: group.items.length });
-  }
+    return { ...group, items, total: group.items.length, label: group.items[0]?.categoryLabel };
+  });
   const shownCount = Math.min(listLimit, visible.length);
 
   const chosenClaims = candidates.filter((claim) => selected.includes(claim.id));
@@ -281,11 +279,16 @@ export default function Departure() {
                 {shownGroups.map((group) => (
                   <section className="responsibility-group" key={group.category}>
                     <header className="responsibility-head">
-                      <CategoryBadge category={group.category} label={group.items[0].categoryLabel} />
+                      <CategoryBadge category={group.category} label={group.label} />
                       <span className="responsibility-hint">{GROUP_HINT[group.category] ?? ''}</span>
                       <span className="responsibility-count">{group.total}</span>
                     </header>
                     <div className="responsibility-list">
+                      {group.items.length === 0 && (
+                        <p className="responsibility-queued">
+                          {group.total} queued — reveal them with “Show more” below
+                        </p>
+                      )}
                       {group.items.map((claim) => {
                         const checked = selected.includes(claim.id);
                         return (

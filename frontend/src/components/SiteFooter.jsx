@@ -20,11 +20,6 @@ const WORKSPACE = [
   { label: 'Incoming member', route: 'workspace' },
 ];
 
-const COMPANY = [
-  { label: 'Privacy Policy', route: 'legal' },
-  { label: 'Terms of Service', route: 'legal' },
-];
-
 export default function SiteFooter({ compact = false }) {
   const { go } = useApp();
   const year = new Date().getFullYear();
@@ -65,14 +60,6 @@ export default function SiteFooter({ compact = false }) {
             ))}
           </div>
 
-          <div className="footer-col">
-            <h3>Company</h3>
-            {COMPANY.map((link) => (
-              <button key={link.label} type="button" className="footer-link" onClick={() => go(link.route)}>
-                {link.label}
-              </button>
-            ))}
-          </div>
         </div>
 
         <div className="footer-bottom">
@@ -91,15 +78,6 @@ export default function SiteFooter({ compact = false }) {
             <button type="button" className="footer-social-link" onClick={() => go('security')} aria-label="Security">
               <ShieldCheck size={15} strokeWidth={1.8} />
             </button>
-            <span className="footer-legal">
-              <button type="button" onClick={() => go('legal')}>
-                Privacy
-              </button>
-              <span aria-hidden="true">·</span>
-              <button type="button" onClick={() => go('legal')}>
-                Terms
-              </button>
-            </span>
           </div>
         </div>
       </div>
